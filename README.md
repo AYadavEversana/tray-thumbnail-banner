@@ -25,7 +25,7 @@ page, with no changes to the client files. Install it once and use it anywhere.
 
 1. Open Chrome and go to `chrome://extensions`.
 2. Turn on **Developer mode** (top-right toggle).
-3. Click **Load unpacked** and select this `tray-thumbnail-extension` folder.
+3. Click **Load unpacked** and select this `tray-thumbnail-banner` folder.
 4. **For local files (`file://` URLs):** click **Details** on the extension and
    enable **Allow access to file URLs**. (Not needed for `http(s)://` pages.)
 
