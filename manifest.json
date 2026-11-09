@@ -1,0 +1,21 @@
+{
+	"manifest_version": 3,
+	"name": "Tray Thumbnail Downloader",
+	"version": "1.0.0",
+	"description": "Download tray-size ISI thumbnails from TheBrief 'toptobottomviewer' preview pages. Works on local files and hosted pages.",
+	"permissions": ["downloads"],
+	"background": {
+		"service_worker": "background.js"
+	},
+	"content_scripts": [
+		{
+			"matches": [
+				"file:///*toptobottomviewer*",
+				"*://*/*toptobottomviewer*"
+			],
+			"all_frames": true,
+			"run_at": "document_idle",
+			"js": ["vendor/html2canvas.min.js", "content.js"]
+		}
+	]
+}
