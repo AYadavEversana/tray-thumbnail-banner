@@ -346,6 +346,21 @@
 			});
 	}
 
+	function copyOne(iframe) {
+		var name = fileNameFor(iframe);
+		setStatus("Capturing " + name + "…");
+		return requestCapture(iframe)
+			.then(function (dataUrl) {
+				var blob = new Blob([dataUrlToBytes(dataUrl)], { type: "image/png" });
+				return navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+			})
+			.then(function () { setStatus("Copied " + name + " to clipboard"); })
+			.catch(function (err) {
+				setStatus("Copy failed: " + (err && err.message ? err.message : err));
+				console.error("[Tray Thumbnail Downloader]", err);
+			});
+	}
+
 	function downloadAll() {
 		var frames = getTrayIframes();
 		if (!frames.length) { setStatus("No tray thumbnails found on this page."); return Promise.resolve(); }
@@ -519,7 +534,16 @@
 			var h = ifr.getAttribute("height") || ifr.offsetHeight;
 			var btn = makeButton("⬇ " + banner + " (" + w + "x" + h + ")");
 			btn.addEventListener("click", function () { downloadOne(ifr); });
-			bar.appendChild(btn);
+			var copyBtn = makeButton("📋");
+			copyBtn.title = "Copy " + banner + " to clipboard";
+			copyBtn.style.cssText += "width:auto;margin:3px 0 3px 4px;";
+			copyBtn.addEventListener("click", function () { copyOne(ifr); });
+			var row = document.createElement("div");
+			row.style.cssText = "display:flex;align-items:center;";
+			btn.style.flex = "1";
+			row.appendChild(btn);
+			row.appendChild(copyBtn);
+			bar.appendChild(row);
 		});
 
 		var status = document.createElement("div");

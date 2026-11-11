@@ -36,11 +36,29 @@ page, with no changes to the client files. Install it once and use it anywhere.
 3. Wait until the tray previews have finished loading/animating.
 4. Choose one of:
    - **Download all as ZIP** — one `tray-thumbnails.zip` with every thumbnail.
+   - **📋 button next to each size** — copies that thumbnail to the clipboard, ready to paste into email, Slack or a doc.
    - **Download all** — each thumbnail as a separate PNG.
    - An individual size — downloads just that one.
 
+### Review & QA
+
+- **🔍 Run QA review** — opens a report (with a *Download report* HTML button) covering, per size:
+  version present, blank/missing ISI text, text differing between sizes, no visible size,
+  duplicate sizes, and ISI autoscroll timing (start delay, duration, whether it reached the
+  bottom or stopped at a stop point). It also lists every unique link with static checks
+  (empty, `javascript:`, non-HTTPS, not opening in a new tab) and a live HTTP status check.
+  Autoscroll timing is recorded from page load, so reload the page if the scroll already
+  finished before the extension attached, and don't touch the tray while it runs.
+- **📝 Save ISI text snapshot** — saves `isi-text_<ID>_v.<ver>.json` with the current ISI text.
+- **🆚 Compare text with snapshot…** — pick a saved snapshot (or a `.txt` file) and see a
+  line-by-line added/removed diff against the ISI text on the current page. Save a snapshot
+  from the old version, open the new version, then compare.
+
+The link status check needs the `<all_urls>` host permission so the extension can request
+the ISI's external links.
+
 Files are saved to your Downloads folder, named by size, e.g.
-`728x90_tray_300x90.png`, `300x250_tray_300x105.png`.
+`728x90_v.1.3.1.png`, `300x250_v.1.3.1.png`.
 
 ## Files
 
