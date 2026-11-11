@@ -215,6 +215,59 @@
 	 * Tray iframe: respond to capture requests
 	 * ------------------------------------------------------------------ */
 	if (window !== window.top) {
+		// Passive recorder for QA: when the ISI autoscroll starts/stops and where it ends.
+		var scrollLog = { first: null, last: null, count: 0, top: 0, max: 0, touched: false };
+		document.addEventListener("scroll", function (ev) {
+			var t = ev.target;
+			if (!t || t === document) t = document.scrollingElement || document.documentElement;
+			var now = performance.now();
+			if (scrollLog.first === null) scrollLog.first = now;
+			scrollLog.last = now;
+			scrollLog.count++;
+			scrollLog.top = t.scrollTop;
+			scrollLog.max = t.scrollHeight - t.clientHeight;
+		}, true);
+		["wheel", "mousedown", "touchstart", "keydown"].forEach(function (n) {
+			document.addEventListener(n, function () { scrollLog.touched = true; }, true);
+		});
+
+		window.addEventListener("message", function (e) {
+			var d = e.data;
+			if (!d || d.type !== "__trayExtInspectRequest") return;
+			var reply = function (payload) {
+				payload.type = "__trayExtInspectResult";
+				payload.id = d.id;
+				(e.source || window.parent).postMessage(payload, "*");
+			};
+			try {
+				var body = document.getElementById("isiBody") || document.body;
+				var links = Array.prototype.slice.call(document.querySelectorAll("a")).map(function (a) {
+					return {
+						href: a.getAttribute("href") || "",
+						text: (a.textContent || "").replace(/\s+/g, " ").trim(),
+						target: a.getAttribute("target") || "",
+						rel: a.getAttribute("rel") || ""
+					};
+				});
+				var sc = body.scrollHeight > body.clientHeight ? body : (document.scrollingElement || document.documentElement);
+				reply({
+					ok: true,
+					text: (body.innerText || body.textContent || "").replace(/\r/g, ""),
+					links: links,
+					viewport: { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight },
+					scrollHeight: sc.scrollHeight,
+					clientHeight: sc.clientHeight,
+					scroll: {
+						first: scrollLog.first, last: scrollLog.last, count: scrollLog.count,
+						top: scrollLog.top, max: scrollLog.max, touched: scrollLog.touched,
+						now: performance.now(), curTop: sc.scrollTop
+					}
+				});
+			} catch (err) {
+				reply({ ok: false, error: String(err && err.message || err) });
+			}
+		});
+
 		window.addEventListener("message", function (e) {
 			var d = e.data;
 			if (!d || d.type !== "__trayExtCaptureRequest") return;
@@ -261,6 +314,16 @@
 	 * ------------------------------------------------------------------ */
 	var pending = {};
 	var seq = 0;
+
+	window.addEventListener("message", function (e) {
+		var d = e.data;
+		if (!d || d.type !== "__trayExtInspectResult") return;
+		var p = pending[d.id];
+		if (!p) return;
+		delete pending[d.id];
+		if (d.ok) p.resolve(d);
+		else p.reject(new Error(d.error || "Inspect failed in preview frame."));
+	});
 
 	window.addEventListener("message", function (e) {
 		var d = e.data;
@@ -342,6 +405,21 @@
 			.then(function () { setStatus("Downloaded " + fileNameFor(iframe)); })
 			.catch(function (err) {
 				setStatus("Error: " + (err && err.message ? err.message : err));
+				console.error("[Tray Thumbnail Downloader]", err);
+			});
+	}
+
+	function copyOne(iframe) {
+		var name = fileNameFor(iframe);
+		setStatus("Capturing " + name + "…");
+		return requestCapture(iframe)
+			.then(function (dataUrl) {
+				var blob = new Blob([dataUrlToBytes(dataUrl)], { type: "image/png" });
+				return navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+			})
+			.then(function () { setStatus("Copied " + name + " to clipboard"); })
+			.catch(function (err) {
+				setStatus("Copy failed: " + (err && err.message ? err.message : err));
 				console.error("[Tray Thumbnail Downloader]", err);
 			});
 	}
@@ -468,6 +546,265 @@
 		});
 	}
 
+	/* ------------------------- Review & QA ------------------------- */
+	function requestInspect(iframe) {
+		return new Promise(function (resolve, reject) {
+			if (!iframe.contentWindow) { reject(new Error("Preview frame not ready.")); return; }
+			var id = "ins_" + (++seq);
+			pending[id] = { resolve: resolve, reject: reject };
+			try {
+				iframe.contentWindow.postMessage({ type: "__trayExtInspectRequest", id: id }, "*");
+			} catch (err) { delete pending[id]; reject(err); return; }
+			setTimeout(function () {
+				if (pending[id]) { delete pending[id]; reject(new Error("Timed out reading preview frame.")); }
+			}, 8000);
+		});
+	}
+
+	function esc(s) {
+		return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+			return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+		});
+	}
+
+	function textLines(t) {
+		return String(t || "").split("\n").map(function (l) { return l.replace(/\s+/g, " ").trim(); })
+			.filter(function (l) { return l; });
+	}
+
+	function lineDiff(a, b) {
+		var n = a.length, m = b.length, i, j;
+		var dp = [];
+		for (i = 0; i <= n; i++) dp.push(new Uint16Array(m + 1));
+		for (i = n - 1; i >= 0; i--) {
+			for (j = m - 1; j >= 0; j--) {
+				dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+			}
+		}
+		var out = [];
+		i = 0; j = 0;
+		while (i < n && j < m) {
+			if (a[i] === b[j]) { out.push({ t: "same", s: a[i] }); i++; j++; }
+			else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ t: "del", s: a[i++] }); }
+			else { out.push({ t: "add", s: b[j++] }); }
+		}
+		while (i < n) out.push({ t: "del", s: a[i++] });
+		while (j < m) out.push({ t: "add", s: b[j++] });
+		return out;
+	}
+
+	function checkLink(url) {
+		return new Promise(function (resolve) {
+			chrome.runtime.sendMessage({ type: "__trayExtCheckLink", url: url }, function (res) {
+				if (chrome.runtime.lastError || !res) resolve({ ok: false, error: "No response" });
+				else resolve(res);
+			});
+		});
+	}
+
+	function pageParam(name) {
+		try { return new URL(location.href).searchParams.get(name) || ""; } catch (e) { return ""; }
+	}
+
+	function showModal(title, bodyHtml, reportName) {
+		var old = document.getElementById("__trayExtModal");
+		if (old) old.parentNode.removeChild(old);
+		var css =
+			"#__trayExtModal{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;}" +
+			"#__trayExtModal .box{background:#fff;width:min(960px,92vw);max-height:88vh;display:flex;flex-direction:column;border-radius:8px;overflow:hidden;}" +
+			"#__trayExtModal .hd{display:flex;align-items:center;padding:10px 14px;background:#094548;color:#fff;font-weight:700;font-size:14px;}" +
+			"#__trayExtModal .hd span{flex:1;}" +
+			"#__trayExtModal .hd button{margin-left:8px;padding:4px 10px;border:none;border-radius:4px;cursor:pointer;font-size:12px;}" +
+			"#__trayExtModal .bd{padding:14px;overflow:auto;font-size:12px;color:#222;}" +
+			"#__trayExtModal h3{margin:14px 0 6px;font-size:13px;color:#094548;}" +
+			"#__trayExtModal table{border-collapse:collapse;width:100%;margin-bottom:8px;}" +
+			"#__trayExtModal th,#__trayExtModal td{border:1px solid #ddd;padding:4px 6px;text-align:left;vertical-align:top;}" +
+			"#__trayExtModal th{background:#f2f5f5;}" +
+			"#__trayExtModal .pass{color:#0a7a2f;font-weight:700;}#__trayExtModal .warn{color:#b26a00;font-weight:700;}#__trayExtModal .fail{color:#c0152f;font-weight:700;}" +
+			"#__trayExtModal .add{background:#e3f6e8;}#__trayExtModal .del{background:#fde7ea;text-decoration:line-through;}" +
+			"#__trayExtModal .ln{padding:1px 6px;white-space:pre-wrap;}";
+		var wrap = document.createElement("div");
+		wrap.id = "__trayExtModal";
+		wrap.innerHTML = "<style>" + css + "</style><div class='box'><div class='hd'><span>" + esc(title) +
+			"</span><button id='__trayExtDl'>Download report</button><button id='__trayExtX'>Close</button></div><div class='bd'>" +
+			bodyHtml + "</div></div>";
+		(document.body || document.documentElement).appendChild(wrap);
+		wrap.querySelector("#__trayExtX").addEventListener("click", function () { wrap.parentNode.removeChild(wrap); });
+		wrap.addEventListener("click", function (e) { if (e.target === wrap) wrap.parentNode.removeChild(wrap); });
+		wrap.querySelector("#__trayExtDl").addEventListener("click", function () {
+			var html = "<!doctype html><meta charset='utf-8'><title>" + esc(title) + "</title><style>" + css.replace(/#__trayExtModal /g, "") +
+				"body{font-family:Arial,sans-serif;font-size:12px;padding:16px}</style><h2>" + esc(title) + "</h2>" + bodyHtml;
+			saveData("data:text/html;charset=utf-8," + encodeURIComponent(html), reportName);
+		});
+	}
+
+	function badge(level, text) { return "<span class='" + level + "'>" + esc(text) + "</span>"; }
+
+	function runQA() {
+		var frames = getTrayIframes();
+		if (!frames.length) { setStatus("No tray thumbnails found on this page."); return Promise.resolve(); }
+		setStatus("Running QA review…");
+		var infos = [];
+		var chain = Promise.resolve();
+		frames.forEach(function (ifr) {
+			chain = chain.then(function () {
+				return requestInspect(ifr).then(function (d) { infos.push({ ifr: ifr, d: d }); })
+					.catch(function (err) { infos.push({ ifr: ifr, err: err.message }); });
+			});
+		});
+		return chain.then(function () {
+			// Consensus ISI text = the most common normalized text across sizes.
+			var counts = {};
+			infos.forEach(function (x) {
+				if (!x.d) return;
+				x.norm = textLines(x.d.text).join("\n");
+				counts[x.norm] = (counts[x.norm] || 0) + 1;
+			});
+			var best = "", bestN = 0;
+			Object.keys(counts).forEach(function (k) { if (counts[k] > bestN) { best = k; bestN = counts[k]; } });
+
+			var seen = {}, rows = "", fails = 0, warns = 0;
+			var allLinks = {};
+			infos.forEach(function (x) {
+				var size = bannerSizeOf(x.ifr) || "tray";
+				var ver = versionOf(x.ifr);
+				var checks = [];
+				var add = function (level, text) { checks.push(badge(level, text)); if (level === "fail") fails++; if (level === "warn") warns++; };
+				if (x.err || !x.d) {
+					add("fail", "Could not read frame: " + (x.err || "unknown"));
+				} else {
+					var d = x.d;
+					if (seen[size]) add("warn", "Duplicate size");
+					seen[size] = true;
+					if (!ver) add("warn", "No version in URL");
+					if (d.viewport.w < 10 || d.viewport.h < 10) add("fail", "Tray has no visible size");
+					if (x.norm.length < 20) add("fail", "Blank / missing ISI text");
+					else if (x.norm !== best) add("fail", "ISI text differs from other sizes");
+					else add("pass", "Text matches");
+					var s = d.scroll;
+					if (s.touched) add("warn", "Page was touched; timing may be off");
+					if (d.scrollHeight <= d.clientHeight + 1) add("warn", "ISI is not scrollable");
+					else if (!s.count) add("warn", "No autoscroll seen (reload page to measure)");
+					else {
+						var delay = (s.first / 1000).toFixed(1), dur = ((s.last - s.first) / 1000).toFixed(1);
+						var atEnd = s.top >= s.max - 2;
+						add(atEnd ? "pass" : "warn", "Starts " + delay + "s, scrolls " + dur + "s, " +
+							(atEnd ? "reached bottom" : "stopped at " + Math.round(s.top) + "/" + Math.round(s.max) + "px (stop point)"));
+					}
+					d.links.forEach(function (l) { (allLinks[l.href] = allLinks[l.href] || []).push({ size: size, l: l }); });
+				}
+				rows += "<tr><td>" + esc(size) + "</td><td>" + esc(ver || "—") + "</td><td>" + (x.d ? x.norm.split("\n").length : "—") +
+					"</td><td>" + checks.join("<br>") + "</td></tr>";
+			});
+
+			var hrefs = Object.keys(allLinks);
+			var linkRows = [];
+			var netQueue = [];
+			hrefs.forEach(function (h) {
+				var first = allLinks[h][0].l;
+				var issues = [];
+				if (!h || h === "#") issues.push(["fail", "Empty link"]);
+				else if (/^javascript:/i.test(h)) issues.push(["warn", "javascript: link"]);
+				else if (/^http:\/\//i.test(h)) issues.push(["warn", "Not HTTPS"]);
+				if (first.target !== "_blank" && /^https?:/i.test(h)) issues.push(["warn", "Does not open in new tab"]);
+				var entry = { href: h, text: first.text, issues: issues, sizes: allLinks[h].map(function (z) { return z.size; }) };
+				linkRows.push(entry);
+				if (/^https?:\/\//i.test(h)) netQueue.push(entry);
+			});
+
+			var idx = 0;
+			function worker() {
+				if (idx >= netQueue.length) return Promise.resolve();
+				var entry = netQueue[idx++];
+				setStatus("Checking links " + idx + "/" + netQueue.length + "…");
+				return checkLink(entry.href).then(function (r) {
+					if (r.ok) entry.issues.push(["pass", "HTTP " + r.status]);
+					else entry.issues.push(["fail", r.status ? "HTTP " + r.status : "Unreachable (" + (r.error || "error") + ")"]);
+				}).then(worker);
+			}
+			return Promise.all([worker(), worker(), worker(), worker()]).then(function () {
+				var linkHtml = linkRows.map(function (e) {
+					if (!e.issues.length) e.issues.push(["pass", "OK"]);
+					e.issues.forEach(function (i) { if (i[0] === "fail") fails++; else if (i[0] === "warn") warns++; });
+					return "<tr><td>" + esc(e.text || "(no text)") + "</td><td style='word-break:break-all'>" + esc(e.href) + "</td><td>" +
+						e.issues.map(function (i) { return badge(i[0], i[1]); }).join("<br>") + "</td></tr>";
+				}).join("");
+
+				var vers = {};
+				infos.forEach(function (x) { var v = versionOf(x.ifr); if (v) vers[v] = true; });
+				var id = pageParam("isiID");
+				var summary = "<p><b>ISI:</b> " + esc(id || "—") + " &nbsp; <b>Version:</b> " + esc(Object.keys(vers).join(", ") || "—") +
+					" &nbsp; <b>Sizes:</b> " + infos.length + " &nbsp; <b>Date:</b> " + esc(new Date().toLocaleString()) + "</p><p>" +
+					(fails ? badge("fail", fails + " failure(s)") : badge("pass", "No failures")) + " &nbsp; " +
+					(warns ? badge("warn", warns + " warning(s)") : badge("pass", "No warnings")) + "</p>";
+				showModal("QA review — " + (id || "ISI"),
+					summary + "<h3>Tray checks</h3><table><tr><th>Size</th><th>Version</th><th>Text lines</th><th>Result</th></tr>" + rows + "</table>" +
+					"<h3>Links (" + linkRows.length + " unique)</h3>" +
+					(linkRows.length ? "<table><tr><th>Text</th><th>URL</th><th>Result</th></tr>" + linkHtml + "</table>" : "<p>No links found.</p>"),
+					"QA-report_" + (id || "ISI") + ".html");
+				setStatus("QA review done: " + fails + " failure(s), " + warns + " warning(s).");
+			});
+		}).catch(function (err) {
+			setStatus("QA error: " + (err && err.message ? err.message : err));
+			console.error("[Tray Thumbnail Downloader]", err);
+		});
+	}
+
+	function currentIsiText() {
+		var frames = getTrayIframes();
+		if (!frames.length) return Promise.reject(new Error("No tray frames found."));
+		return requestInspect(frames[0]).then(function (d) {
+			return { lines: textLines(d.text), version: versionOf(frames[0]) };
+		});
+	}
+
+	function saveSnapshot() {
+		setStatus("Reading ISI text…");
+		return currentIsiText().then(function (cur) {
+			var id = pageParam("isiID") || "ISI";
+			var snap = { id: id, version: cur.version, savedAt: new Date().toISOString(), lines: cur.lines };
+			var name = "isi-text_" + id + (cur.version ? "_v." + cur.version : "") + ".json";
+			return saveData("data:application/json;charset=utf-8," + encodeURIComponent(JSON.stringify(snap, null, 1)), name)
+				.then(function () { setStatus("Saved snapshot " + name); });
+		}).catch(function (err) { setStatus("Error: " + (err && err.message ? err.message : err)); });
+	}
+
+	function compareSnapshot() {
+		var input = document.createElement("input");
+		input.type = "file";
+		input.accept = ".json,.txt";
+		input.addEventListener("change", function () {
+			var file = input.files && input.files[0];
+			if (!file) return;
+			var reader = new FileReader();
+			reader.onload = function () {
+				var old;
+				try {
+					var raw = String(reader.result);
+					var parsed = null;
+					try { parsed = JSON.parse(raw); } catch (e) { /* plain text file */ }
+					old = parsed && parsed.lines ? parsed : { id: "", version: "", lines: textLines(raw) };
+				} catch (err) { setStatus("Could not read snapshot."); return; }
+				setStatus("Comparing…");
+				currentIsiText().then(function (cur) {
+					var diff = lineDiff(old.lines, cur.lines);
+					var added = diff.filter(function (x) { return x.t === "add"; }).length;
+					var removed = diff.filter(function (x) { return x.t === "del"; }).length;
+					var body = "<p><b>Old:</b> " + esc(old.id || file.name) + " " + esc(old.version ? "v." + old.version : "") +
+						" &nbsp; <b>New (this page):</b> " + esc(pageParam("isiID")) + " " + esc(cur.version ? "v." + cur.version : "") + "</p><p>" +
+						(added || removed ? badge("warn", added + " added, " + removed + " removed line(s)") : badge("pass", "No text changes")) + "</p>" +
+						diff.map(function (x) {
+							return "<div class='ln " + (x.t === "same" ? "" : x.t) + "'>" + (x.t === "add" ? "+ " : x.t === "del" ? "− " : "  ") + esc(x.s) + "</div>";
+						}).join("");
+					showModal("ISI text comparison", body, "ISI-text-diff_" + (pageParam("isiID") || "ISI") + ".html");
+					setStatus("Compared: " + added + " added, " + removed + " removed.");
+				}).catch(function (err) { setStatus("Error: " + (err && err.message ? err.message : err)); });
+			};
+			reader.readAsText(file);
+		});
+		input.click();
+	}
+
 	/* ----------------------------- UI ----------------------------- */
 	function makeButton(label) {
 		var b = document.createElement("button");
@@ -519,8 +856,35 @@
 			var h = ifr.getAttribute("height") || ifr.offsetHeight;
 			var btn = makeButton("⬇ " + banner + " (" + w + "x" + h + ")");
 			btn.addEventListener("click", function () { downloadOne(ifr); });
+			var copyBtn = makeButton("📋");
+			copyBtn.title = "Copy " + banner + " to clipboard";
+			copyBtn.style.cssText += "width:auto;margin:3px 0 3px 4px;";
+			copyBtn.addEventListener("click", function () { copyOne(ifr); });
+			var row = document.createElement("div");
+			row.style.cssText = "display:flex;align-items:center;";
+			btn.style.flex = "1";
+			row.appendChild(btn);
+			row.appendChild(copyBtn);
+			bar.appendChild(row);
+		});
+
+		var qaTitle = document.createElement("div");
+		qaTitle.textContent = "Review & QA";
+		qaTitle.style.cssText = "font-weight:700;font-size:12px;color:#094548;margin:2px 0 4px;";
+		bar.appendChild(qaTitle);
+		[
+			["🔍 Run QA review", runQA],
+			["📝 Save ISI text snapshot", saveSnapshot],
+			["🆚 Compare text with snapshot…", compareSnapshot]
+		].forEach(function (b) {
+			var btn = makeButton(b[0]);
+			btn.addEventListener("click", b[1]);
 			bar.appendChild(btn);
 		});
+
+		var sep2 = document.createElement("div");
+		sep2.style.cssText = "border-top:1px solid #e0e0e0;margin:6px 0;";
+		bar.appendChild(sep2);
 
 		var status = document.createElement("div");
 		status.id = "__trayExtStatus";

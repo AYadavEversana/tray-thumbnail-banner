@@ -19,3 +19,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 	);
 	return true; // keep the message channel open for the async response
 });
+
+// Link checker for the QA review: HEAD first, falling back to GET.
+async function probe(url, method, signal) {
+	return fetch(url, { method: method, redirect: "follow", signal: signal, cache: "no-store" });
+}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+	if (!msg || msg.type !== "__trayExtCheckLink") return;
+	(async () => {
+		const ctl = new AbortController();
+		const timer = setTimeout(() => ctl.abort(), 8000);
+		try {
+			let res = await probe(msg.url, "HEAD", ctl.signal);
+			if (res.status === 403 || res.status === 405 || res.status === 501) res = await probe(msg.url, "GET", ctl.signal);
+			sendResponse({ ok: res.status < 400, status: res.status });
+		} catch (err) {
+			sendResponse({ ok: false, error: err && err.name === "AbortError" ? "timeout" : "network error" });
+		} finally {
+			clearTimeout(timer);
+		}
+	})();
+	return true;
+});

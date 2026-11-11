@@ -38,17 +38,51 @@ page, with no changes to the client files. Install it once and use it anywhere.
    - **Download all as ZIP** — one `tray-thumbnails.zip` with every thumbnail.
    - **Download all** — each thumbnail as a separate PNG.
    - An individual size — downloads just that one.
+   - **📋 button next to each size** — copies that thumbnail to the clipboard,
+     ready to paste into email, Slack or a doc.
 
-Files are saved to your Downloads folder, named by size, e.g.
-`728x90_tray_300x90.png`, `300x250_tray_300x105.png`.
+### File naming
+
+Files are saved to your Downloads folder as `<banner size>_v.<version>.png`,
+e.g. `160x600_v.1.3.1.png`, `728x90_v.1.3.1.png`.
+
+- The banner size comes from the tray's `bid` parameter.
+- The version comes from the viewer URL's `isiVer` parameter (the same version
+  shown by the viewer). If no version is found, the `_v.` part is omitted.
+- Duplicate names inside a ZIP get a `_2`, `_3` suffix.
+
+### Review & QA
+
+- **🔍 Run QA review** — opens a report (with a **Download report** HTML button)
+  covering, per size: version present, blank/missing ISI text, text that differs
+  between sizes, tray with no visible size, duplicate sizes, and ISI autoscroll
+  timing (start delay, duration, and whether it reached the bottom or stopped at
+  a stop point). It also lists every unique link with static checks (empty,
+  `javascript:`, non-HTTPS, not opening in a new tab) and a live HTTP status check.
+  - Autoscroll timing is recorded from page load. Reload the page if the scroll
+    already finished before the extension attached, and don't touch the tray
+    while it runs.
+- **📝 Save ISI text snapshot** — saves `isi-text_<ID>_v.<ver>.json` with the
+  current ISI text.
+- **🆚 Compare text with snapshot…** — pick a saved snapshot (or a `.txt` file)
+  and see a line-by-line added/removed diff against the ISI text on the current
+  page. Save a snapshot from the old version, open the new version, then compare.
+
+## Permissions
+
+| Permission | Why |
+|------------|-----|
+| `downloads` | Save PNGs, ZIPs and reports to your Downloads folder. |
+| `clipboardWrite` | The 📋 copy-to-clipboard button. |
+| `<all_urls>` (host) | The QA link status check requests the ISI's external links. |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `manifest.json` | Extension manifest (MV3). Injects only on `*toptobottomviewer*` URLs. |
-| `content.js` | Builds the panel (top frame) and captures each tray (preview frames). |
-| `background.js` | Service worker; saves the PNGs via the `downloads` API. |
+| `content.js` | Panel UI, tray capture, ZIP builder, clipboard copy, QA review and text compare. |
+| `background.js` | Service worker; saves files via the `downloads` API and checks link status. |
 | `vendor/html2canvas.min.js` | Bundled renderer (v1.4.1). |
 
 ## Notes / troubleshooting
