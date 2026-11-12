@@ -28,6 +28,7 @@
 			[["l", "Left"], ["r", "Right"], ["t", "Top"], ["b", "Bottom"]].forEach(function (p) {
 				var sty = st["border" + p[1] + "Style"];
 				var w = parseFloat(st["border" + p[1] + "Width"]);
+				if (w > 0 && w < 1) w = 1; // Chrome snaps hairline borders to 1px
 				if (sty && sty !== "none" && w > 0) { o[p[0]] = w; any = true; if (!o.color) o.color = st["border" + p[1] + "Color"] || ""; }
 			});
 			return any ? o : null;
@@ -52,6 +53,7 @@
 					if (/::-webkit-scrollbar$/.test(sel)) {
 						if (st.width) style.width = parseInt(st.width, 10) || style.width;
 						if (st.backgroundColor) style.trackColor = st.backgroundColor;
+						if (st.borderRadius) style.trackRadius = parseFloat(st.borderRadius) || 0;
 						var tb = sideBorders(st);
 						if (tb) style.trackB = tb;
 					}
@@ -67,6 +69,16 @@
 				}
 			}
 		} catch (err) { /* use defaults */ }
+		// Thumb length limits from the computed pseudo-element (handles cascade
+		// and !important across rules).
+		try {
+			var tcs = scrollEl && getComputedStyle(scrollEl, "::-webkit-scrollbar-thumb");
+			if (tcs) {
+				var th = parseFloat(tcs.height), tmin = parseFloat(tcs.minHeight);
+				if (tcs.height !== "auto" && th > 0) style.thumbH = th;
+				if (tmin > 0) style.thumbMinH = tmin;
+			}
+		} catch (err) { /* keep defaults */ }
 		return style;
 	}
 
@@ -112,13 +124,49 @@
 		var yCss = rect.top - targetRect.top;
 
 		var ratio = scrollEl.clientHeight / scrollEl.scrollHeight;
-		// Thumb box height, with a sensible minimum so it reads as a pill.
-		var thumbHCss = Math.max(trackH * ratio, 20);
-		var thumbYCss = yCss + (scrollEl.scrollTop / scrollEl.scrollHeight) * trackH;
-		if (thumbYCss + thumbHCss > yCss + trackH) thumbYCss = yCss + trackH - thumbHCss;
+		// Chrome's shortest custom thumb is 26px, or the thumb's CSS height when
+		// set (min-height still wins); it is positioned over the remaining track.
+		var minThumb = Math.max(sb.thumbH || 26, sb.thumbMinH || 0);
+		var thumbHCss = Math.min(trackH, Math.max(Math.round(trackH * ratio), minThumb));
+		var maxScroll = Math.max(1, scrollEl.scrollHeight - scrollEl.clientHeight);
+		var thumbYCss = yCss + (trackH - thumbHCss) * Math.min(1, scrollEl.scrollTop / maxScroll);
 
 		var ctx = canvas.getContext("2d");
 		var S = drawScale;
+		ctx.save();
+		try {
+			clipToVisible(ctx, scrollEl, rect, barW, trackH, xCss, yCss, S);
+			paintScrollbar(ctx, S, sb, barW, border, trackH, xCss, yCss, thumbHCss, thumbYCss);
+		} finally {
+			ctx.restore();
+		}
+	}
+
+	// Elements overlapping the ISI (e.g. a footer bar) hide the real scrollbar
+	// underneath them, so only paint the rows where the scrollbar is on top.
+	function clipToVisible(ctx, scrollEl, rect, barW, trackH, xCss, yCss, S) {
+		var cx = rect.right - barW / 2;
+		if (cx < 0 || cx >= window.innerWidth) return;
+		var runs = [], start = -1;
+		for (var y = 0; y <= trackH; y++) {
+			var vy = rect.top + y + 0.5, vis = true;
+			if (y < trackH && vy >= 0 && vy < window.innerHeight) {
+				var el = document.elementFromPoint(cx, vy);
+				vis = !el || el === scrollEl || scrollEl.contains(el);
+			} else if (y === trackH) vis = false;
+			if (vis && start < 0) start = y;
+			if (!vis && start >= 0) { runs.push([start, y]); start = -1; }
+		}
+		if (runs.length === 1 && runs[0][0] === 0 && runs[0][1] === trackH) return;
+		// Mostly covered usually means a transparent click layer, not a real overlap.
+		var shown = runs.reduce(function (n, r) { return n + r[1] - r[0]; }, 0);
+		if (shown < trackH * 0.5) return;
+		ctx.beginPath();
+		runs.forEach(function (r) { ctx.rect(xCss * S, (yCss + r[0]) * S, barW * S, (r[1] - r[0]) * S); });
+		ctx.clip();
+	}
+
+	function paintScrollbar(ctx, S, sb, barW, border, trackH, xCss, yCss, thumbHCss, thumbYCss) {
 		var fillBox = function (x, y, w, h, color) {
 			ctx.fillStyle = color;
 			ctx.fillRect(x * S, y * S, w * S, h * S);
@@ -135,8 +183,24 @@
 		};
 
 		// Track (the scrollbar gutter is reserved, so this does not cover text).
-		fillBox(xCss, yCss, barW, trackH, sb.trackColor);
-		drawBorders(sb.trackB, xCss, yCss, barW, trackH);
+		var trackR = Math.min(sb.trackRadius || 0, barW / 2, trackH / 2);
+		if (trackR > 0) {
+			// Rounded track: border colour in the outer shape, fill in the inner one.
+			var tb = sb.trackB || { l: 0, r: 0, t: 0, b: 0 };
+			ctx.fillStyle = sb.trackB ? (tb.color || "#ffffff") : sb.trackColor;
+			roundRect(ctx, xCss * S, yCss * S, barW * S, trackH * S, trackR * S);
+			ctx.fill();
+			if (sb.trackB) {
+				var iw = barW - tb.l - tb.r, ih = trackH - tb.t - tb.b;
+				ctx.fillStyle = sb.trackColor;
+				roundRect(ctx, (xCss + tb.l) * S, (yCss + tb.t) * S, iw * S, ih * S,
+					Math.max(0, trackR - Math.max(tb.l, tb.r, tb.t, tb.b)) * S);
+				ctx.fill();
+			}
+		} else {
+			fillBox(xCss, yCss, barW, trackH, sb.trackColor);
+			drawBorders(sb.trackB, xCss, yCss, barW, trackH);
+		}
 
 		if (sb.thumbB) {
 			var rad0 = Math.min(sb.radius, barW / 2, thumbHCss / 2);
@@ -312,6 +376,35 @@
 			}
 		});
 
+		// Self-check / audit requests: geometry, style audit and autoscroll freeze.
+		window.addEventListener("message", function (e) {
+			var d = e.data;
+			if (!d || d.type !== "__trayExtRpc") return;
+			var reply = function (payload) {
+				payload.type = "__trayExtRpcResult";
+				payload.id = d.id;
+				(e.source || window.parent).postMessage(payload, "*");
+			};
+			try {
+				var target = document.getElementById("adHolder") || document.body;
+				var scrollEl = findScrollContainer(target);
+				var moving = scrollLog.last !== null && performance.now() - scrollLog.last < 900;
+				if (d.op === "freeze") {
+					var b = document.getElementById("isiBody") || scrollEl;
+					if (b) b.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 0 }));
+					reply({ ok: true });
+				} else if (d.op === "geometry") {
+					var res = { ok: true, geo: TrayChecks.geometry(scrollEl), moving: moving };
+					if (d.issues) res.issues = TrayChecks.styleAudit(scrollEl, scrollEl ? getScrollbarStyle(scrollEl).width : 0);
+					reply(res);
+				} else {
+					reply({ ok: false, error: "Unknown request " + d.op });
+				}
+			} catch (err) {
+				reply({ ok: false, error: String(err && err.message || err) });
+			}
+		});
+
 		window.addEventListener("message", function (e) {
 			var d = e.data;
 			if (!d || d.type !== "__trayExtCaptureRequest") return;
@@ -358,6 +451,30 @@
 	 * ------------------------------------------------------------------ */
 	var pending = {};
 	var seq = 0;
+
+	window.addEventListener("message", function (e) {
+		var d = e.data;
+		if (!d || d.type !== "__trayExtRpcResult") return;
+		var p = pending[d.id];
+		if (!p) return;
+		delete pending[d.id];
+		if (d.ok) p.resolve(d);
+		else p.reject(new Error(d.error || "Request failed in preview frame."));
+	});
+
+	function frameRpc(iframe, op, extra, timeoutMs) {
+		return new Promise(function (resolve, reject) {
+			if (!iframe.contentWindow) { reject(new Error("Preview frame not ready.")); return; }
+			var id = "rpc_" + (++seq);
+			pending[id] = { resolve: resolve, reject: reject };
+			var msg = { type: "__trayExtRpc", id: id, op: op };
+			for (var k in (extra || {})) msg[k] = extra[k];
+			try { iframe.contentWindow.postMessage(msg, "*"); } catch (err) { delete pending[id]; reject(err); return; }
+			setTimeout(function () {
+				if (pending[id]) { delete pending[id]; reject(new Error("Timed out waiting for preview frame.")); }
+			}, timeoutMs || 8000);
+		});
+	}
 
 	window.addEventListener("message", function (e) {
 		var d = e.data;
@@ -650,36 +767,141 @@
 		try { return new URL(location.href).searchParams.get(name) || ""; } catch (e) { return ""; }
 	}
 
-	function showModal(title, bodyHtml, reportName) {
+	var MODAL_CSS =
+		"#__trayExtModal{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;}" +
+		"#__trayExtModal .box{background:#fff;width:min(1100px,94vw);max-height:90vh;display:flex;flex-direction:column;border-radius:8px;overflow:hidden;}" +
+		"#__trayExtModal .hd{display:flex;align-items:center;padding:10px 14px;background:#094548;color:#fff;font-weight:700;font-size:14px;}" +
+		"#__trayExtModal .hd span{flex:1;}" +
+		"#__trayExtModal .hd button{margin-left:8px;padding:4px 10px;border:none;border-radius:4px;cursor:pointer;font-size:12px;}" +
+		"#__trayExtModal .bd{padding:14px;overflow:auto;font-size:12px;color:#222;}" +
+		"#__trayExtModal h3{margin:14px 0 6px;font-size:13px;color:#094548;}" +
+		"#__trayExtModal table{border-collapse:collapse;width:100%;margin-bottom:8px;}" +
+		"#__trayExtModal th,#__trayExtModal td{border:1px solid #ddd;padding:4px 6px;text-align:left;vertical-align:top;}" +
+		"#__trayExtModal th{background:#f2f5f5;}" +
+		"#__trayExtModal .pass{color:#0a7a2f;font-weight:700;}#__trayExtModal .warn{color:#b26a00;font-weight:700;}#__trayExtModal .fail{color:#c0152f;font-weight:700;}" +
+		"#__trayExtModal .add{background:#e3f6e8;}#__trayExtModal .del{background:#fde7ea;text-decoration:line-through;}" +
+		"#__trayExtModal .ln{padding:1px 6px;white-space:pre-wrap;}" +
+		"#__trayExtModal .shot{display:block;max-width:320px;border:1px solid #ccc;background:#fff;}" +
+		"#__trayExtModal .muted{color:#666;}" +
+		"#__trayExtModal .so{margin-top:16px;padding:10px 12px;border:1px solid #094548;border-radius:6px;background:#f6fafa;}" +
+		"#__trayExtModal .so .row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;}" +
+		"#__trayExtModal .so label{display:flex;flex-direction:column;font-weight:700;font-size:11px;color:#094548;gap:3px;}" +
+		"#__trayExtModal .so input,#__trayExtModal .so select,#__trayExtModal .so textarea{font:12px Arial,sans-serif;padding:4px 6px;border:1px solid #aac;border-radius:4px;min-width:180px;}" +
+		"#__trayExtModal .so textarea{width:100%;box-sizing:border-box;min-width:0;}" +
+		"#__trayExtModal .signed{margin-top:16px;border:2px solid #094548;border-radius:6px;padding:8px 12px;}";
+
+	var DECISIONS = [
+		["Approved", "pass"],
+		["Approved with comments", "warn"],
+		["Changes required", "warn"],
+		["Rejected", "fail"]
+	];
+
+	function sha256Hex(text) {
+		try {
+			if (!(window.crypto && crypto.subtle)) return Promise.resolve("");
+			return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (buf) {
+				return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+			}).catch(function () { return ""; });
+		} catch (e) { return Promise.resolve(""); }
+	}
+
+	function signoffFormHtml() {
+		var today = new Date();
+		var iso = today.getFullYear() + "-" + ("0" + (today.getMonth() + 1)).slice(-2) + "-" + ("0" + today.getDate()).slice(-2);
+		return "<div class='so'><h3 style='margin-top:0'>Reviewer sign-off</h3>" +
+			"<div class='row'><label>Reviewer name<input id='__soName' placeholder='Your name'></label>" +
+			"<label>Role<input id='__soRole' placeholder='e.g. QA, Editorial, Legal'></label>" +
+			"<label>Review date<input id='__soDate' type='date' value='" + iso + "'></label>" +
+			"<label>Decision<select id='__soDecision'><option value=''>— Select —</option>" +
+			DECISIONS.map(function (d) { return "<option>" + d[0] + "</option>"; }).join("") + "</select></label></div>" +
+			"<label>Comments<textarea id='__soComments' rows='3' placeholder='Notes for the team (optional)'></textarea></label>" +
+			"<div class='muted' style='margin-top:6px'>The sign-off is added to the downloaded / printed report with a fingerprint of the report content.</div></div>";
+	}
+
+	function readSignoff(wrap) {
+		var v = function (id) { var el = wrap.querySelector("#" + id); return el ? el.value.trim() : ""; };
+		return { name: v("__soName"), role: v("__soRole"), date: v("__soDate"), decision: v("__soDecision"), comments: v("__soComments") };
+	}
+
+	function signedBlockHtml(so, fingerprint) {
+		var lvl = "warn";
+		DECISIONS.forEach(function (d) { if (d[0] === so.decision) lvl = d[1]; });
+		var row = function (k, val) { return "<tr><th style='width:160px'>" + esc(k) + "</th><td>" + val + "</td></tr>"; };
+		return "<div class='signed'><h3 style='margin-top:4px'>Reviewer sign-off</h3><table>" +
+			row("Decision", so.decision ? badge(lvl, so.decision) : badge("warn", "Not signed off")) +
+			row("Reviewer", esc(so.name || "—") + (so.role ? " <span class='muted'>(" + esc(so.role) + ")</span>" : "")) +
+			row("Review date", esc(so.date || "—")) +
+			row("Comments", so.comments ? "<div style='white-space:pre-wrap'>" + esc(so.comments) + "</div>" : "—") +
+			row("Signed at", esc(new Date().toLocaleString())) +
+			row("Report fingerprint", fingerprint ? "<code>SHA-256 " + esc(fingerprint.slice(0, 32)) + "…</code>" : "<span class='muted'>unavailable on this page</span>") +
+			"</table></div>";
+	}
+
+	// opts.signoff: show a reviewer sign-off form that is stamped into the
+	// downloaded / printed report.
+	function showModal(title, bodyHtml, reportName, opts) {
+		opts = opts || {};
 		var old = document.getElementById("__trayExtModal");
 		if (old) old.parentNode.removeChild(old);
-		var css =
-			"#__trayExtModal{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;}" +
-			"#__trayExtModal .box{background:#fff;width:min(960px,92vw);max-height:88vh;display:flex;flex-direction:column;border-radius:8px;overflow:hidden;}" +
-			"#__trayExtModal .hd{display:flex;align-items:center;padding:10px 14px;background:#094548;color:#fff;font-weight:700;font-size:14px;}" +
-			"#__trayExtModal .hd span{flex:1;}" +
-			"#__trayExtModal .hd button{margin-left:8px;padding:4px 10px;border:none;border-radius:4px;cursor:pointer;font-size:12px;}" +
-			"#__trayExtModal .bd{padding:14px;overflow:auto;font-size:12px;color:#222;}" +
-			"#__trayExtModal h3{margin:14px 0 6px;font-size:13px;color:#094548;}" +
-			"#__trayExtModal table{border-collapse:collapse;width:100%;margin-bottom:8px;}" +
-			"#__trayExtModal th,#__trayExtModal td{border:1px solid #ddd;padding:4px 6px;text-align:left;vertical-align:top;}" +
-			"#__trayExtModal th{background:#f2f5f5;}" +
-			"#__trayExtModal .pass{color:#0a7a2f;font-weight:700;}#__trayExtModal .warn{color:#b26a00;font-weight:700;}#__trayExtModal .fail{color:#c0152f;font-weight:700;}" +
-			"#__trayExtModal .add{background:#e3f6e8;}#__trayExtModal .del{background:#fde7ea;text-decoration:line-through;}" +
-			"#__trayExtModal .ln{padding:1px 6px;white-space:pre-wrap;}";
 		var wrap = document.createElement("div");
 		wrap.id = "__trayExtModal";
-		wrap.innerHTML = "<style>" + css + "</style><div class='box'><div class='hd'><span>" + esc(title) +
-			"</span><button id='__trayExtDl'>Download report</button><button id='__trayExtX'>Close</button></div><div class='bd'>" +
-			bodyHtml + "</div></div>";
+		wrap.innerHTML = "<style>" + MODAL_CSS + "</style><div class='box'><div class='hd'><span>" + esc(title) +
+			"</span><button id='__trayExtDl'>Download report</button><button id='__trayExtPrint'>Print / Save as PDF</button>" +
+			"<button id='__trayExtX'>Close</button></div><div class='bd'>" +
+			bodyHtml + (opts.signoff ? signoffFormHtml() : "") + "</div></div>";
 		(document.body || document.documentElement).appendChild(wrap);
-		wrap.querySelector("#__trayExtX").addEventListener("click", function () { wrap.parentNode.removeChild(wrap); });
-		wrap.addEventListener("click", function (e) { if (e.target === wrap) wrap.parentNode.removeChild(wrap); });
+		var close = function () { if (wrap.parentNode) wrap.parentNode.removeChild(wrap); };
+		wrap.querySelector("#__trayExtX").addEventListener("click", close);
+		wrap.addEventListener("click", function (e) { if (e.target === wrap) close(); });
+
+		if (opts.signoff) {
+			var nameEl = wrap.querySelector("#__soName"), roleEl = wrap.querySelector("#__soRole");
+			try {
+				chrome.storage.local.get(["reviewerName", "reviewerRole"], function (st) {
+					if (st && st.reviewerName && !nameEl.value) nameEl.value = st.reviewerName;
+					if (st && st.reviewerRole && !roleEl.value) roleEl.value = st.reviewerRole;
+				});
+			} catch (e) { /* storage unavailable */ }
+			var remember = function () {
+				try { chrome.storage.local.set({ reviewerName: nameEl.value.trim(), reviewerRole: roleEl.value.trim() }); } catch (e) {}
+			};
+			nameEl.addEventListener("change", remember);
+			roleEl.addEventListener("change", remember);
+		}
+
+		var buildReport = function () {
+			var head = "<!doctype html><meta charset='utf-8'><title>" + esc(title) + "</title><style>" +
+				MODAL_CSS.replace(/#__trayExtModal /g, "") + "body{font-family:Arial,sans-serif;font-size:12px;padding:16px;color:#222}" +
+				"@media print{.shot{max-width:240px}}</style><h2>" + esc(title) + "</h2>";
+			if (!opts.signoff) return Promise.resolve(head + bodyHtml);
+			var so = readSignoff(wrap);
+			if (!so.decision && !so.name &&
+				!window.confirm("The reviewer sign-off is empty. Continue without signing off?")) return Promise.resolve(null);
+			return sha256Hex(title + "\n" + bodyHtml + "\n" + JSON.stringify(so)).then(function (fp) {
+				return head + bodyHtml + signedBlockHtml(so, fp);
+			});
+		};
+
 		wrap.querySelector("#__trayExtDl").addEventListener("click", function () {
-			var html = "<!doctype html><meta charset='utf-8'><title>" + esc(title) + "</title><style>" + css.replace(/#__trayExtModal /g, "") +
-				"body{font-family:Arial,sans-serif;font-size:12px;padding:16px}</style><h2>" + esc(title) + "</h2>" + bodyHtml;
-			saveData("data:text/html;charset=utf-8," + encodeURIComponent(html), reportName);
+			buildReport().then(function (html) {
+				if (!html) return;
+				saveData("data:text/html;charset=utf-8," + encodeURIComponent(html), reportName);
+			});
 		});
+		wrap.querySelector("#__trayExtPrint").addEventListener("click", function () {
+			// Open the window synchronously (inside the click) so it isn't blocked.
+			var win = window.open("", "_blank");
+			if (!win) { setStatus("Allow pop-ups for this page to print the report."); return; }
+			buildReport().then(function (html) {
+				if (!html) { win.close(); return; }
+				win.document.open();
+				win.document.write(html);
+				win.document.close();
+				setTimeout(function () { win.focus(); win.print(); }, 400);
+			});
+		});
+		return wrap;
 	}
 
 	function badge(level, text) { return "<span class='" + level + "'>" + esc(text) + "</span>"; }
@@ -785,7 +1007,7 @@
 					summary + "<h3>Tray checks</h3><table><tr><th>Size</th><th>Version</th><th>Text lines</th><th>Result</th></tr>" + rows + "</table>" +
 					"<h3>Links (" + linkRows.length + " unique)</h3>" +
 					(linkRows.length ? "<table><tr><th>Text</th><th>URL</th><th>Result</th></tr>" + linkHtml + "</table>" : "<p>No links found.</p>"),
-					"QA-report_" + (id || "ISI") + ".html");
+					"QA-report_" + (id || "ISI") + ".html", { signoff: true });
 				setStatus("QA review done: " + fails + " failure(s), " + warns + " warning(s).");
 			});
 		}).catch(function (err) {
@@ -847,6 +1069,251 @@
 			reader.readAsText(file);
 		});
 		input.click();
+	}
+
+	/* ---------------------- Rendering self-check ---------------------- */
+	function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+	function loadImg(src) {
+		return new Promise(function (resolve, reject) {
+			var im = new Image();
+			im.onload = function () { resolve(im); };
+			im.onerror = function () { reject(new Error("Could not load image.")); };
+			im.src = src;
+		});
+	}
+
+	function screenshotTab() {
+		return new Promise(function (resolve, reject) {
+			chrome.runtime.sendMessage({ type: "__trayExtScreenshot" }, function (res) {
+				if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+				if (!res || !res.ok) { reject(new Error((res && res.error) || "Screenshot failed.")); return; }
+				resolve(res.dataUrl);
+			});
+		});
+	}
+
+	function setOverlaysHidden(hidden) {
+		["__trayExtBar", "__trayExtModal"].forEach(function (id) {
+			var el = document.getElementById(id);
+			if (el) el.style.visibility = hidden ? "hidden" : "";
+		});
+	}
+
+	function shiftBox(b, ox, oy) { return b ? { x: b.x - ox, y: b.y - oy, w: b.w, h: b.h, kind: b.kind } : null; }
+
+	// Compare what the tray really looks like on screen with what the
+	// downloader produces. freeze: stop a running autoscroll first so both
+	// images show the same scroll position.
+	function selfCheckFrame(ifr, freeze) {
+		var note = "";
+		return frameRpc(ifr, "geometry", { issues: true }).then(function (first) {
+			if (!first.moving) return first;
+			if (!freeze) {
+				note = "ISI was still autoscrolling; results may be off.";
+				return first;
+			}
+			return frameRpc(ifr, "freeze").then(function () { return sleep(1300); })
+				.then(function () { return frameRpc(ifr, "geometry", { issues: true }); })
+				.then(function (g) { if (g.moving) note = "ISI was still moving after it was paused."; return g; });
+		}).then(function (info) {
+			ifr.scrollIntoView({ block: "center", inline: "nearest" });
+			setOverlaysHidden(true);
+			return sleep(300).then(function () {
+				return frameRpc(ifr, "geometry");
+			}).then(function (g) {
+				var r = ifr.getBoundingClientRect();
+				var box = { x: r.left + ifr.clientLeft, y: r.top + ifr.clientTop, w: ifr.clientWidth, h: ifr.clientHeight };
+				return screenshotTab().then(function (shot) {
+					setOverlaysHidden(false);
+					return requestCapture(ifr).then(function (cap) {
+						return { info: info, geo: g.geo, box: box, shot: shot, cap: cap };
+					});
+				}, function (err) { setOverlaysHidden(false); throw err; });
+			});
+		}).then(function (x) {
+			return Promise.all([loadImg(x.shot), loadImg(x.cap)]).then(function (imgs) {
+				var shotImg = imgs[0], capImg = imgs[1];
+				var scale = shotImg.naturalWidth / window.innerWidth;
+				var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+				var x0 = Math.max(x.box.x, 0), y0 = Math.max(x.box.y, 0);
+				var x1 = Math.min(x.box.x + x.box.w, vw), y1 = Math.min(x.box.y + x.box.h, vh);
+				var w = Math.floor(Math.min(x1 - x0, capImg.naturalWidth)), h = Math.floor(Math.min(y1 - y0, capImg.naturalHeight));
+				if (w < 4 || h < 4) throw new Error("Tray is not visible on screen.");
+				var ox = Math.round(x0 - x.box.x), oy = Math.round(y0 - x.box.y);
+
+				var rc = document.createElement("canvas"); rc.width = w; rc.height = h;
+				var rctx = rc.getContext("2d");
+				rctx.imageSmoothingQuality = "high";
+				rctx.drawImage(shotImg, x0 * scale, y0 * scale, w * scale, h * scale, 0, 0, w, h);
+				var cc = document.createElement("canvas"); cc.width = w; cc.height = h;
+				var cctx = cc.getContext("2d");
+				cctx.drawImage(capImg, ox, oy, w, h, 0, 0, w, h);
+
+				var geo = {
+					scrollbar: shiftBox(x.geo.scrollbar, ox, oy),
+					bullets: (x.geo.bullets || []).map(function (b) { return shiftBox(b, ox, oy); })
+				};
+				var cmp = TrayChecks.compare(rctx.getImageData(0, 0, w, h), cctx.getImageData(0, 0, w, h), geo);
+				if (ox || oy || w < capImg.naturalWidth || h < capImg.naturalHeight) {
+					note = (note ? note + " " : "") + "Only the part visible on screen was compared.";
+				}
+				return {
+					size: bannerSizeOf(ifr) || (ifr.clientWidth + "x" + ifr.clientHeight),
+					name: fileNameFor(ifr),
+					issues: x.info.issues || [],
+					cmp: cmp,
+					realUrl: rc.toDataURL("image/png"),
+					capUrl: cc.toDataURL("image/png"),
+					note: note
+				};
+			});
+		});
+	}
+
+	function pct(r) { return (r * 100).toFixed(r < 0.01 ? 2 : 1) + "%"; }
+
+	function worstLevel(levels) {
+		return levels.indexOf("fail") >= 0 ? "fail" : levels.indexOf("warn") >= 0 ? "warn" : "pass";
+	}
+
+	function selfCheckLevel(r) {
+		if (r.error) return "fail";
+		return worstLevel([r.cmp.level].concat(r.issues.map(function (i) { return i.level; })));
+	}
+
+	function selfCheckCells(r) {
+		if (r.error) return badge("fail", "Check failed: " + r.error);
+		var c = r.cmp, out = [];
+		out.push("<b>Scrollbar:</b> " + (c.scrollbar ? badge(c.scrollbar.level, c.scrollbar.level === "pass" ? "matches" : "differs") +
+			" <span class='muted'>(" + pct(c.scrollbar.ratio) + " of pixels differ)</span>" : "<span class='muted'>none on screen</span>"));
+		out.push("<b>Bullets:</b> " + (c.bullets.checked ? badge(c.bullets.level, c.bullets.bad ? c.bullets.bad + " of " + c.bullets.checked + " differ" : "all " + c.bullets.checked + " match") :
+			"<span class='muted'>none visible</span>"));
+		out.push("<b>Overall:</b> " + badge(c.overall.level, pct(c.overall.ratio) + " of pixels differ"));
+		r.issues.forEach(function (i) { out.push(badge(i.level, i.area + ": ") + esc(i.text)); });
+		if (r.note) out.push("<span class='muted'>" + esc(r.note) + "</span>");
+		return out.join("<br>");
+	}
+
+	function runSelfCheck() {
+		var frames = getTrayIframes();
+		if (!frames.length) { setStatus("No tray thumbnails found on this page."); return Promise.resolve(); }
+		var old = document.getElementById("__trayExtModal");
+		if (old) old.parentNode.removeChild(old);
+		var results = [];
+		var chain = Promise.resolve();
+		frames.forEach(function (ifr, i) {
+			chain = chain.then(function () {
+				setStatus("Self-check " + (i + 1) + "/" + frames.length + ": " + fileNameFor(ifr) + "…");
+				return selfCheckFrame(ifr, false).then(function (r) { results.push(r); }, function (err) {
+					results.push({ size: bannerSizeOf(ifr) || "tray", name: fileNameFor(ifr), error: err.message || String(err), issues: [] });
+				});
+			}).then(function () { return sleep(550); }); // Chrome allows ~2 screenshots per second
+		});
+		return chain.then(function () {
+			var counts = { pass: 0, warn: 0, fail: 0 };
+			var rows = results.map(function (r) {
+				var lvl = selfCheckLevel(r);
+				counts[lvl]++;
+				var imgs = r.error ? "<td colspan='3'></td>" :
+					"<td><img class='shot' src='" + r.realUrl + "'></td><td><img class='shot' src='" + r.capUrl + "'></td><td><img class='shot' src='" + r.cmp.diffUrl + "'></td>";
+				return "<tr><td><b>" + esc(r.size) + "</b><br>" + badge(lvl, lvl.toUpperCase()) + "</td>" + imgs + "<td>" + selfCheckCells(r) + "</td></tr>";
+			}).join("");
+			var id = pageParam("isiID");
+			var body = "<p><b>ISI:</b> " + esc(id || "—") + " &nbsp; <b>Sizes:</b> " + results.length + " &nbsp; <b>Date:</b> " + esc(new Date().toLocaleString()) + "</p>" +
+				"<p>" + badge("pass", counts.pass + " match") + " &nbsp; " + badge("warn", counts.warn + " to review") + " &nbsp; " + badge("fail", counts.fail + " differ") + "</p>" +
+				"<p class='muted'>Compares a real screenshot of each tray with the image the downloader produces. In the Differences column, " +
+				"red pixels differ, the scrollbar is outlined (green = matches, red = differs) and mismatched bullets are outlined in orange.</p>" +
+				"<table><tr><th>Size</th><th>Real (on screen)</th><th>Downloaded</th><th>Differences</th><th>Result</th></tr>" + rows + "</table>";
+			showModal("Rendering self-check — " + (id || "ISI"), body, "Self-check_" + (id || "ISI") + ".html");
+			setStatus("Self-check done: " + counts.pass + " match, " + counts.warn + " to review, " + counts.fail + " differ.");
+		}).catch(function (err) {
+			setOverlaysHidden(false);
+			setStatus("Self-check error: " + (err && err.message ? err.message : err));
+			console.error("[Tray Thumbnail Downloader]", err);
+		});
+	}
+
+	/* ------------------ All-brands audit (per page) ------------------ */
+	function openAudit() {
+		var href = location.href.split("#")[0];
+		var base = "";
+		var i = href.indexOf("/clients/");
+		if (i >= 0) base = href.slice(0, i + 1);
+		else if ((i = href.indexOf("/_viewer/")) >= 0) base = href.slice(0, i + 1);
+		chrome.runtime.sendMessage({ type: "__trayExtOpenAudit", base: base }, function () {
+			if (chrome.runtime.lastError) setStatus("Could not open the audit: " + chrome.runtime.lastError.message);
+		});
+	}
+
+	function auditConfig() {
+		var m = location.hash.match(/trayAudit=([\w-]+)/);
+		if (!m) return null;
+		var idx = location.hash.match(/idx=(\d+)/);
+		return { run: m[1], idx: idx ? +idx[1] : 0, pixel: /pixel=1/.test(location.hash) };
+	}
+
+	function waitForFrames(maxMs) {
+		var start = Date.now();
+		return new Promise(function (resolve) {
+			(function poll() {
+				var frames = getTrayIframes();
+				if (frames.length) {
+					Promise.all(frames.map(function (f) { return frameRpc(f, "geometry", {}, 1500).then(function () { return true; }, function () { return false; }); }))
+						.then(function (ok) {
+							if (ok.every(Boolean) || Date.now() - start > maxMs) resolve(frames);
+							else setTimeout(poll, 700);
+						});
+				} else if (Date.now() - start > maxMs) {
+					resolve([]);
+				} else {
+					setTimeout(poll, 700);
+				}
+			})();
+		});
+	}
+
+	function runAuditPage(cfg) {
+		var send = function (result) {
+			chrome.runtime.sendMessage({ type: "__trayAuditResult", run: cfg.run, idx: cfg.idx, result: result });
+		};
+		waitForFrames(30000).then(function (frames) {
+			if (!frames.length) { send({ error: "No tray previews loaded on this page." }); return; }
+			// Let fonts and the ISI build-in settle, then pause every autoscroll.
+			return sleep(2500).then(function () {
+				return Promise.all(frames.map(function (f) { return frameRpc(f, "freeze").catch(function () {}); }));
+			}).then(function () { return sleep(1300); }).then(function () {
+				var sizes = [];
+				var chain = Promise.resolve();
+				frames.forEach(function (ifr) {
+					chain = chain.then(function () {
+						var size = bannerSizeOf(ifr) || (ifr.clientWidth + "x" + ifr.clientHeight);
+						var job = cfg.pixel ? selfCheckFrame(ifr, true) :
+							frameRpc(ifr, "geometry", { issues: true }).then(function (g) { return { size: size, issues: g.issues || [] }; });
+						return job.then(function (r) {
+							var lvl = r.cmp ? selfCheckLevel(r) : worstLevel(r.issues.map(function (i) { return i.level; }));
+							var entry = { size: r.size || size, level: lvl, issues: r.issues, note: r.note || "" };
+							if (r.cmp) {
+								entry.pixel = {
+									level: r.cmp.level,
+									scrollbar: r.cmp.scrollbar ? { level: r.cmp.scrollbar.level, ratio: r.cmp.scrollbar.ratio } : null,
+									bullets: { checked: r.cmp.bullets.checked, bad: r.cmp.bullets.bad, level: r.cmp.bullets.level },
+									overall: { level: r.cmp.overall.level, ratio: r.cmp.overall.ratio }
+								};
+								// Keep the report small: only attach images when something differs.
+								if (lvl !== "pass") { entry.realUrl = r.realUrl; entry.capUrl = r.capUrl; entry.diffUrl = r.cmp.diffUrl; }
+							}
+							sizes.push(entry);
+						}, function (err) {
+							sizes.push({ size: size, level: "fail", issues: [], error: err.message || String(err) });
+						}).then(function () { return cfg.pixel ? sleep(550) : null; });
+					});
+				});
+				return chain.then(function () { send({ sizes: sizes, version: versionOf(frames[0]) }); });
+			});
+		}).catch(function (err) {
+			send({ error: (err && err.message) || String(err) });
+		});
 	}
 
 	/* ----------------------------- UI ----------------------------- */
@@ -919,7 +1386,9 @@
 		[
 			["🔍 Run QA review", runQA],
 			["📝 Save ISI text snapshot", saveSnapshot],
-			["🆚 Compare text with snapshot…", compareSnapshot]
+			["🆚 Compare text with snapshot…", compareSnapshot],
+			["🩺 Rendering self-check", runSelfCheck],
+			["🗂 Audit all brands…", openAudit]
 		].forEach(function (b) {
 			var btn = makeButton(b[0]);
 			btn.addEventListener("click", b[1]);
@@ -951,6 +1420,10 @@
 	} else {
 		tryBuild();
 	}
+
+	// Opened by the all-brands audit: check this page and report back.
+	var auditCfg = auditConfig();
+	if (auditCfg) runAuditPage(auditCfg);
 
 	var rebuildTimer = null;
 	var observer = new MutationObserver(function () {

@@ -16,7 +16,10 @@ page, with no changes to the client files. Install it once and use it anywhere.
 - `html2canvas` is bundled (in `vendor/`), so no internet connection is required
   for the capture itself.
 - The native ISI scrollbar is drawn onto the image afterward (html2canvas does
-  not render native scrollbars), matching the real `::-webkit-scrollbar` colors.
+  not render native scrollbars), matching the real `::-webkit-scrollbar` colors,
+  borders, rounded track and Chrome's thumb length (26px minimum, or the thumb's
+  CSS `height`/`min-height`). It is hidden where something (e.g. a footer bar)
+  covers the ISI, as on the live page.
 - ISI list bullets (an `li::before` SVG background image that html2canvas skips)
   are re-created as real dots in the capture, reading each bullet's color,
   position, size and fill/outline style from the page so it matches any brand.
@@ -68,21 +71,84 @@ e.g. `160x600_v.1.3.1.png`, `728x90_v.1.3.1.png`.
   and see a line-by-line added/removed diff against the ISI text on the current
   page. Save a snapshot from the old version, open the new version, then compare.
 
+#### Reviewer sign-off
+
+The QA report ends with a **Reviewer sign-off** form: name, role, review date,
+decision (*Approved*, *Approved with comments*, *Changes required*, *Rejected*)
+and comments. Name and role are remembered for next time.
+
+**Download report** and **Print / Save as PDF** stamp the sign-off into the
+report together with the time it was signed and a SHA-256 fingerprint of the
+report content, so a saved report can be matched to what was reviewed. You're
+asked to confirm if you export without signing off. (Allow pop-ups for the page
+if *Print* doesn't open.)
+
+### 🩺 Rendering self-check
+
+Proves each download matches what's on screen. For every tray it:
+
+1. pauses the ISI autoscroll (the same as scrolling with the mouse wheel),
+2. screenshots the real tray in the tab,
+3. captures the downloadable thumbnail at the same moment, and
+4. compares them pixel by pixel.
+
+The report shows **Real**, **Downloaded** and **Differences** (changed pixels in
+red; the scrollbar outlined green/red; differing bullets outlined orange) with a
+result per size:
+
+- **Scrollbar** — compared strictly (it is flat colour).
+- **Bullets** — each visible bullet is checked; one that differs fails.
+- **Overall** — share of differing pixels in the rest of the tray (light
+  tolerance for text antialiasing).
+- **Style notes** — CSS the downloader can't reproduce (e.g. `scrollbar-color`,
+  gradient/box-shadow thumbs, non-circle SVG bullets, CSS filters on bullets,
+  blend modes), so you know why a size may differ.
+
+Keep the tab visible and don't scroll while it runs; it moves each tray into
+view to screenshot it.
+
+### 🗂 Audit all brands
+
+Runs the checks across every ISI in one go and produces one report. Click
+**🗂 Audit all brands…** on any viewer page to open the audit page, then:
+
+1. **Choose the clients folder** (the repo's `clients/` folder). It finds every
+   `…/lib/toptobottomviewer/index.htm` and reads client, brand, ISI, status
+   (approved/pending) and version from the folder and `isiText.js`. Chrome asks
+   to confirm the folder upload; nothing leaves your machine. Or paste viewer
+   URLs instead.
+2. Filter by client / status / text and tick the ISIs to include.
+3. Keep **Pixel self-check** on for the full rendering check (slower), or turn it
+   off for a quick style-only audit.
+4. **Start**. A separate Chrome window opens and loads each ISI in turn — keep
+   it visible (not minimised or covered) while it runs. **Stop** at any time.
+
+Results show a summary, one row per ISI with grouped findings, and per-size
+details with images for anything not passing. Export with **Download HTML
+report** or **Download CSV**. The last run (without images) is kept and can be
+reopened with **Show last results**.
+
+The base URL defaults to the site/folder of the viewer you started from. For
+local files, the extension needs *Allow access to file URLs*.
+
 ## Permissions
 
 | Permission | Why |
 |------------|-----|
 | `downloads` | Save PNGs, ZIPs and reports to your Downloads folder. |
 | `clipboardWrite` | The 📋 copy-to-clipboard button. |
-| `<all_urls>` (host) | The QA link status check requests the ISI's external links. |
+| `storage` | Remember the reviewer name/role and the last audit results. |
+| `<all_urls>` (host) | The QA link status check, and screenshots of the tab for the rendering self-check / audit. |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `manifest.json` | Extension manifest (MV3). Injects only on `*toptobottomviewer*` URLs. |
-| `content.js` | Panel UI, tray capture, ZIP builder, clipboard copy, QA review and text compare. |
-| `background.js` | Service worker; saves files via the `downloads` API and checks link status. |
+| `content.js` | Panel UI, tray capture, ZIP builder, clipboard copy, QA review with sign-off, text compare, rendering self-check and the audit runner. |
+| `checks.js` | Self-check helpers: tray geometry, style audit and pixel comparison. |
+| `background.js` | Service worker; saves files, checks link status, takes tab screenshots and opens the audit page. |
+| `audit.html`, `audit.css`, `audit.js` | The **Audit all brands** page. |
 | `vendor/html2canvas.min.js` | Bundled renderer (v1.4.1). |
 
 ## Notes / troubleshooting
@@ -94,3 +160,8 @@ e.g. `160x600_v.1.3.1.png`, `728x90_v.1.3.1.png`.
 - **A thumbnail fails to capture:** wait until the preview has fully rendered,
   then try again. The status line at the bottom of the panel shows progress and
   any error details.
+- **Self-check says "No custom ::-webkit-scrollbar CSS… overlay":** the live
+  tray uses the operating system's hidden-until-scrolling scrollbar (macOS), but
+  the download draws a default bar. Add `::-webkit-scrollbar` CSS to the ISI.
+- **Audit stalls or images are blank:** keep the audit window visible; Chrome
+  doesn't paint covered or minimised windows.

@@ -1,0 +1,29 @@
+body { font: 13px/1.4 Arial, sans-serif; color: #222; margin: 0; background: #eef2f2; }
+header { background: #094548; color: #fff; padding: 14px 24px; }
+header h1 { margin: 0 0 4px; font-size: 20px; }
+header .muted { color: #cfe3e3; margin: 0; }
+.card { background: #fff; margin: 16px 24px; padding: 14px 18px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+h2 { font-size: 15px; color: #094548; margin: 0 0 10px; }
+.row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin: 8px 0; }
+label { display: flex; flex-direction: column; font-weight: 700; font-size: 11px; color: #094548; gap: 3px; }
+label.grow { flex: 1; min-width: 260px; }
+label.check { flex-direction: row; align-items: center; gap: 6px; font-size: 12px; color: #222; font-weight: 400; }
+input, select, textarea { font: 12px Arial, sans-serif; padding: 5px 7px; border: 1px solid #aac; border-radius: 4px; }
+textarea { width: 100%; box-sizing: border-box; margin: 6px 0; }
+button { font: 12px Arial, sans-serif; padding: 6px 12px; border: 1px solid #094548; background: #fff; color: #094548; border-radius: 4px; cursor: pointer; }
+button.primary, button:hover { background: #094548; color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.muted { color: #666; }
+code { background: #f1f4f4; padding: 0 3px; border-radius: 3px; }
+.tableWrap { max-height: 320px; overflow: auto; border: 1px solid #ddd; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ddd; padding: 4px 6px; text-align: left; vertical-align: top; }
+th { background: #f2f5f5; position: sticky; top: 0; }
+.pass { color: #0a7a2f; font-weight: 700; }
+.warn { color: #b26a00; font-weight: 700; }
+.fail { color: #c0152f; font-weight: 700; }
+.pending { color: #777; }
+.shot { display: block; max-width: 300px; border: 1px solid #ccc; background: #fff; }
+details summary { cursor: pointer; color: #094548; }
+.findings { margin: 0; padding-left: 16px; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 10px; margin-right: 6px; background: #f2f5f5; }

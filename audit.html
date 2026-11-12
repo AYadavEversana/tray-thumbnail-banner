@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Tray rendering audit — all brands</title>
+	<link rel="stylesheet" href="audit.css">
+</head>
+<body>
+	<header>
+		<h1>Tray rendering audit — all brands</h1>
+		<p class="muted">Opens every ISI viewer page, checks how each tray renders, and lists the ones whose
+			scrollbar, bullets, fonts or effects the downloader can't reproduce exactly.</p>
+	</header>
+
+	<section class="card">
+		<h2>1. Find the viewer pages</h2>
+		<div class="row">
+			<label class="grow">Project location (the folder that contains <code>clients/</code>)
+				<input id="base" placeholder="file:///Users/you/banner-projects/Banners_TheBrief_ISIs/">
+			</label>
+		</div>
+		<div class="row">
+			<button id="pick">📁 Choose the <code>clients</code> folder…</button>
+			<input id="dir" type="file" webkitdirectory multiple hidden>
+			<span class="muted">Chrome only reads the file names (and each <code>isiText.js</code> for the version). Nothing is uploaded.</span>
+		</div>
+		<details>
+			<summary>Or paste viewer URLs (hosted pages)</summary>
+			<textarea id="urls" rows="4" placeholder="One toptobottomviewer/index.htm URL per line"></textarea>
+			<button id="addUrls">Add URLs</button>
+		</details>
+	</section>
+
+	<section class="card" id="listCard" hidden>
+		<h2>2. Choose what to audit</h2>
+		<div class="row">
+			<label>Client <select id="fClient"><option value="">All clients</option></select></label>
+			<label>Status <select id="fStatus"><option value="">All</option><option>approved</option><option>pending</option></select></label>
+			<label class="grow">Search <input id="fText" placeholder="ISI ID or brand"></label>
+			<button id="selAll">Select shown</button>
+			<button id="selNone">Clear</button>
+		</div>
+		<div class="tableWrap"><table id="list"><thead><tr><th></th><th>Client</th><th>Brand</th><th>ISI</th><th>Status</th><th>Version</th></tr></thead><tbody></tbody></table></div>
+		<div class="row">
+			<label class="check"><input id="pixel" type="checkbox" checked> Pixel self-check (compares the real tray with the download; slower)</label>
+		</div>
+		<div class="row">
+			<button id="start" class="primary">▶ Start audit</button>
+			<button id="stop" hidden>■ Stop</button>
+			<span id="progress" class="muted"></span>
+		</div>
+		<p class="muted">The audit opens a separate Chrome window and loads each page in turn. Keep that window visible
+			(not minimized or covered) until it finishes — screenshots need it on screen.</p>
+	</section>
+
+	<section class="card" id="resultCard" hidden>
+		<h2>3. Results</h2>
+		<div id="summary"></div>
+		<div class="row">
+			<label>Show <select id="fResult"><option value="">All</option><option value="issues" selected>Only with issues</option></select></label>
+			<button id="dlHtml">⬇ Download report (HTML)</button>
+			<button id="dlCsv">⬇ Download CSV</button>
+		</div>
+		<div id="results"></div>
+	</section>
+
+	<p id="last" class="muted"></p>
+	<script src="audit.js"></script>
+</body>
+</html>
