@@ -165,6 +165,63 @@
 	}
 
 	/* ------------------------------------------------------------------ *
+	 * Shared: SVG <img> without intrinsic width/height (e.g. brand logos as
+	 * viewBox-only data URIs) are mis-sized by html2canvas. Swap each one in
+	 * the clone for a canvas drawn from the live, correctly laid-out image.
+	 * ------------------------------------------------------------------ */
+	function fixSvgImages(clonedDoc) {
+		try {
+			var live = document.querySelectorAll("img");
+			var cloned = clonedDoc.querySelectorAll("img");
+			if (live.length !== cloned.length) return;
+			for (var i = 0; i < live.length; i++) {
+				var img = live[i];
+				var src = img.currentSrc || img.src || "";
+				if (!/^data:image\/svg\+xml|\.svg(\?|#|$)/i.test(src)) continue;
+				if (!img.complete || !img.naturalWidth) continue;
+				var w = img.clientWidth, h = img.clientHeight;
+				if (!w || !h) continue;
+				var scale = 3;
+				var c = clonedDoc.createElement("canvas");
+				c.width = Math.round(w * scale);
+				c.height = Math.round(h * scale);
+				c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+				var orig = cloned[i];
+				c.className = orig.className;
+				if (orig.id) c.id = orig.id;
+				var cs = window.getComputedStyle(img);
+				c.style.cssText = orig.style.cssText;
+				c.style.width = w + "px";
+				c.style.height = h + "px";
+				c.style.display = cs.display === "inline" ? "inline-block" : cs.display;
+				c.style.verticalAlign = cs.verticalAlign;
+				orig.parentNode.replaceChild(c, orig);
+			}
+		} catch (err) { /* keep html2canvas default */ }
+	}
+
+	// Top-to-bottom views have no overflow, but an "overflow-y: scroll" ISI
+	// still shows an empty, styled scrollbar track.
+	function drawEmptyTrack(canvas, target, cssWidth) {
+		var el = document.getElementById("isiBody");
+		if (!el || window.getComputedStyle(el).overflowY !== "scroll") return;
+		if (el.scrollHeight > el.clientHeight + 1) return;
+		var st = window.getComputedStyle(el);
+		var gutter = el.offsetWidth - el.clientWidth -
+			(parseFloat(st.borderLeftWidth) || 0) - (parseFloat(st.borderRightWidth) || 0);
+		if (gutter <= 0) return;
+		var sb = getScrollbarStyle(el);
+		var S = canvas.width / cssWidth;
+		var t = target.getBoundingClientRect();
+		var r = el.getBoundingClientRect();
+		var x = r.right - t.left - (parseFloat(st.borderRightWidth) || 0) - gutter;
+		var y = r.top - t.top + (parseFloat(st.borderTopWidth) || 0);
+		var ctx = canvas.getContext("2d");
+		ctx.fillStyle = sb.trackColor;
+		ctx.fillRect(x * S, y * S, gutter * S, el.clientHeight * S);
+	}
+
+	/* ------------------------------------------------------------------ *
 	 * Shared: list bullets. ISIs draw list bullets with an element::before
 	 * that has an SVG data-URI background image, which html2canvas does not
 	 * render. We re-create each one as a real element in the html2canvas
@@ -260,8 +317,15 @@
 	 * Tray iframe: respond to capture requests
 	 * ------------------------------------------------------------------ */
 	if (window !== window.top) {
+		// Unique per document load, so the top frame can tell when a frame has
+		// actually reloaded after "Refresh Page".
+		var docToken = Math.random().toString(36).slice(2) + Date.now().toString(36);
 		window.addEventListener("message", function (e) {
 			var d = e.data;
+			if (d && d.type === "__trayExtPing") {
+				(e.source || window.parent).postMessage({ type: "__trayExtPong", id: d.id, token: docToken }, "*");
+				return;
+			}
 			if (!d || d.type !== "__trayExtCaptureRequest") return;
 
 			var reply = function (payload) {
@@ -281,6 +345,12 @@
 			// banner-width adHolder — e.g. a 728x90 banner shows a 300-wide tray.
 			var width = document.documentElement.clientWidth || target.offsetWidth;
 			var height = document.documentElement.clientHeight || target.offsetHeight;
+			// Top-to-bottom frames are 20000px tall; crop to the full ISI content.
+			var isTb = /[?&]type=toptobottom\b/.test(location.search) || /\/toptobottom\//.test(location.pathname);
+			if (isTb) {
+				var full = Math.ceil(target.getBoundingClientRect().bottom + window.scrollY);
+				if (full > 0) height = Math.min(height, full);
+			}
 			html2canvas(target, {
 				backgroundColor: "#ffffff",
 				width: width,
@@ -290,9 +360,10 @@
 				scale: 1,
 				useCORS: true,
 				logging: false,
-				onclone: function (clonedDoc) { addBulletMarkers(clonedDoc); }
+				onclone: function (clonedDoc) { fixSvgImages(clonedDoc); addBulletMarkers(clonedDoc); }
 			}).then(function (canvas) {
 				try { drawScrollbar(canvas, target, width); } catch (err) { /* keep image */ }
+				if (isTb) { try { drawEmptyTrack(canvas, target, width); } catch (err) { /* keep image */ } }
 				reply({ ok: true, dataUrl: canvas.toDataURL("image/png") });
 			}).catch(function (err) {
 				reply({ ok: false, error: (err && err.message) ? err.message : String(err) });
@@ -309,8 +380,12 @@
 
 	window.addEventListener("message", function (e) {
 		var d = e.data;
-		if (!d || d.type !== "__trayExtCaptureResult") return;
+		if (!d || (d.type !== "__trayExtCaptureResult" && d.type !== "__trayExtPong")) return;
 		var p = pending[d.id];
+		if (d.type === "__trayExtPong") {
+			if (p) { delete pending[d.id]; p.resolve(d.token); }
+			return;
+		}
 		if (!p) return;
 		delete pending[d.id];
 		if (d.ok) p.resolve(d.dataUrl);
@@ -319,6 +394,34 @@
 
 	function getTrayIframes() {
 		return Array.prototype.slice.call(document.querySelectorAll('iframe[src*="actualsize"]'));
+	}
+
+	function getTopToBottomIframes() {
+		return Array.prototype.slice.call(document.querySelectorAll('iframe[src*="toptobottom/"]'));
+	}
+
+	function isTopToBottom(iframe) {
+		return /toptobottom\//.test(iframe.getAttribute("src") || "");
+	}
+
+	function includeTopToBottom() {
+		var t = document.getElementById("__trayExtIncludeTb");
+		return !t || t.checked;
+	}
+
+	// Frames to capture for "all" downloads: each tray, followed by its
+	// top-to-bottom view when that option is on.
+	function getCaptureIframes() {
+		var trays = getTrayIframes();
+		if (!includeTopToBottom()) return trays;
+		var tbs = getTopToBottomIframes();
+		var out = [];
+		trays.forEach(function (ifr, i) {
+			out.push(ifr);
+			if (tbs[i]) out.push(tbs[i]);
+		});
+		for (var j = trays.length; j < tbs.length; j++) out.push(tbs[j]);
+		return out;
 	}
 
 	function bannerSizeOf(iframe) {
@@ -332,7 +435,7 @@
 		var w = iframe.getAttribute("width") || iframe.offsetWidth;
 		var h = iframe.getAttribute("height") || iframe.offsetHeight;
 		var ver = versionOf(iframe);
-		return (banner || w + "x" + h) + (ver ? "_v." + ver : "");
+		return (banner || w + "x" + h) + (isTopToBottom(iframe) ? "_toptobottom" : "") + (ver ? "_v." + ver : "");
 	}
 
 	function versionOf(iframe) {
@@ -392,7 +495,7 @@
 	}
 
 	function downloadAll() {
-		var frames = getTrayIframes();
+		var frames = getCaptureIframes();
 		if (!frames.length) { setStatus("No tray thumbnails found on this page."); return Promise.resolve(); }
 		var chain = Promise.resolve();
 		frames.forEach(function (ifr) {
@@ -481,7 +584,7 @@
 	}
 
 	function downloadAllZip() {
-		var frames = getTrayIframes();
+		var frames = getCaptureIframes();
 		if (!frames.length) { setStatus("No tray thumbnails found on this page."); return Promise.resolve(); }
 
 		var files = [];
@@ -513,6 +616,318 @@
 		});
 	}
 
+	/* ------------------------- All options ------------------------- *
+	 * Viewers with "showhide" options (radio groups such as PAN/SUNLIGHT
+	 * versions, colour schemes, header/footer variants, and checkboxes) are
+	 * re-rendered for every combination via the viewer's own "Refresh Page"
+	 * button, captured, and saved in one ZIP with the option prefixed to each
+	 * filename, e.g. SUNLIGHT_160x600_v.1.0.6.png.
+	 */
+	function optionIndex(input) {
+		var m = /(\d+)$/.exec(input.id || "");
+		return m ? parseInt(m[1], 10) : 0;
+	}
+
+	function labelFor(input) {
+		var cell = input.closest ? input.closest("grid_item") : null;
+		var prev = cell ? cell.previousElementSibling : null;
+		return prev ? (prev.textContent || "").trim() : (input.id || "option");
+	}
+
+	function getOptionInputs() {
+		var grid = document.getElementById("inputGridContainer");
+		if (!grid) return [];
+		return Array.prototype.slice.call(
+			grid.querySelectorAll('input[type="radio"][id^="radio"], input[type="checkbox"][id^="checkbox"]')
+		).sort(function (a, b) { return optionIndex(a) - optionIndex(b); });
+	}
+
+	function getOptionModel() {
+		var inputs = getOptionInputs();
+		var groups = [];
+		var byName = {};
+		var checkboxes = [];
+		inputs.forEach(function (inp) {
+			if (inp.type === "radio") {
+				var g = byName[inp.name];
+				if (!g) { g = byName[inp.name] = { name: inp.name, radios: [] }; groups.push(g); }
+				g.radios.push(inp);
+			} else {
+				checkboxes.push(inp);
+			}
+		});
+		return { inputs: inputs, groups: groups, checkboxes: checkboxes };
+	}
+
+	function hasOptions(model) {
+		return model.checkboxes.length > 0 || model.groups.some(function (g) { return g.radios.length > 1; });
+	}
+
+	function buildVariants(model, varyBoxes) {
+		var variants = [[]];
+		model.groups.forEach(function (g) {
+			var next = [];
+			variants.forEach(function (v) {
+				g.radios.forEach(function (r) { next.push(v.concat([{ input: r, checked: true, group: g }])); });
+			});
+			variants = next;
+		});
+		varyBoxes.forEach(function (cb) {
+			var next = [];
+			variants.forEach(function (v) {
+				next.push(v.concat([{ input: cb, checked: true, vary: true }]));
+				next.push(v.concat([{ input: cb, checked: false, vary: true }]));
+			});
+			variants = next;
+		});
+		return variants;
+	}
+
+	// Map option inputs to their config keys by reading the query string the
+	// viewer writes into the tray iframe src (same order as the inputs).
+	function readOptionKeys(model) {
+		var map = {};
+		var ifr = getTrayIframes()[0];
+		if (!ifr) return map;
+		var params = [];
+		try {
+			new URL(ifr.getAttribute("src"), location.href).searchParams.forEach(function (val, name) {
+				if (name === "bid" || name === "btn" || name === "type") return;
+				if (/^inject~/.test(val)) return;
+				params.push(name);
+			});
+		} catch (e) { return map; }
+		if (params.length !== model.inputs.length) return map;
+		model.inputs.forEach(function (inp, i) {
+			var name = params[i];
+			var tilde = name.indexOf("~");
+			map[inp.id] = tilde >= 0 ? name.slice(tilde + 1) : name;
+		});
+		return map;
+	}
+
+	function tokenize(text) {
+		return String(text || "")
+			.replace(/^show(?=[A-Z])/, "")
+			.replace(/colou?rscheme$/i, "")
+			.replace(/\s+version$/i, "")
+			.toUpperCase()
+			.replace(/[^A-Z0-9]+/g, "-")
+			.replace(/^-+|-+$/g, "");
+	}
+
+	function optionToken(input, keys) {
+		return tokenize(keys[input.id] || labelFor(input)) || tokenize(input.id);
+	}
+
+	function prefixFor(variant, model, keys) {
+		// Disambiguate radio tokens that repeat across groups (e.g. header/footer "BOG").
+		var seen = {};
+		var clash = {};
+		model.groups.forEach(function (g) {
+			if (g.radios.length < 2) return;
+			g.radios.forEach(function (r) {
+				var t = optionToken(r, keys);
+				if (seen[t] && seen[t] !== g.name) { clash[g.name] = true; clash[seen[t]] = true; }
+				seen[t] = seen[t] || g.name;
+			});
+		});
+		var parts = [];
+		variant.forEach(function (s) {
+			var t = optionToken(s.input, keys);
+			if (s.group) {
+				if (s.group.radios.length < 2) return;
+				parts.push(clash[s.group.name] ? tokenize(s.group.name) + "-" + t : t);
+			} else if (s.vary) {
+				parts.push(s.checked ? t : "NO-" + t);
+			}
+		});
+		return parts.join("_");
+	}
+
+	function pingFrame(iframe, ms) {
+		return new Promise(function (resolve) {
+			if (!iframe.contentWindow) { resolve(null); return; }
+			var id = "ping_" + (++seq);
+			pending[id] = { resolve: resolve, reject: function () { resolve(null); } };
+			try { iframe.contentWindow.postMessage({ type: "__trayExtPing", id: id }, "*"); } catch (e) {}
+			setTimeout(function () { if (pending[id]) { delete pending[id]; resolve(null); } }, ms || 500);
+		});
+	}
+
+	function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+	function frameTokens() {
+		return Promise.all(getCaptureIframes().map(function (f) { return pingFrame(f, 800); }));
+	}
+
+	function waitForReload(oldTokens, timeoutMs) {
+		var deadline = Date.now() + (timeoutMs || 25000);
+		function poll() {
+			return frameTokens().then(function (tokens) {
+				var ready = tokens.length > 0 && tokens.every(function (t, i) { return t && t !== oldTokens[i]; });
+				if (ready) return true;
+				if (Date.now() > deadline) return false;
+				return sleep(300).then(poll);
+			});
+		}
+		return poll();
+	}
+
+	function findRefreshButton() {
+		var grid = document.getElementById("inputGridContainer") || document;
+		return Array.prototype.slice.call(grid.querySelectorAll('input[type="submit"], input[type="button"], button'))
+			.filter(function (b) { return /refresh/i.test(b.value || b.textContent || ""); })[0] || null;
+	}
+
+	function applyVariant(variant, model) {
+		variant.forEach(function (s) { s.input.checked = s.checked; });
+		var btn = findRefreshButton();
+		if (!btn) return Promise.reject(new Error("Couldn't find the viewer's \"Refresh Page\" button."));
+		return frameTokens().then(function (oldTokens) {
+			btn.click();
+			return waitForReload(oldTokens);
+		}).then(function (ok) {
+			if (!ok) console.warn("[Tray Thumbnail Downloader] Frames did not confirm reload in time; capturing anyway.");
+			return sleep(2500); // let fonts/GSAP finish laying out the ISI
+		});
+	}
+
+	var optionsRunning = false;
+
+	function downloadAllOptions(varyBoxes) {
+		if (optionsRunning) return Promise.resolve();
+		var model = getOptionModel();
+		if (!hasOptions(model)) { setStatus("This viewer has no options."); return Promise.resolve(); }
+		var variants = buildVariants(model, varyBoxes || []);
+		var frameCount = getCaptureIframes().length;
+		if (variants.length * frameCount > 120 &&
+			!window.confirm(variants.length + " option combinations × " + frameCount + " frames = " +
+				(variants.length * frameCount) + " images. Continue?")) return Promise.resolve();
+
+		optionsRunning = true;
+		var original = model.inputs.map(function (inp) { return inp.checked; });
+		var originalSrcs = Array.prototype.slice.call(document.querySelectorAll("iframe")).map(function (f) {
+			return { el: f, src: f.getAttribute("src") };
+		});
+		var files = [];
+		var used = {};
+		var keys = {};
+		var chain = Promise.resolve();
+
+		variants.forEach(function (variant, vi) {
+			chain = chain.then(function () {
+				setStatus("Option " + (vi + 1) + "/" + variants.length + ": rendering…");
+				return applyVariant(variant, model);
+			}).then(function () {
+				if (!Object.keys(keys).length) keys = readOptionKeys(model);
+				var prefix = prefixFor(variant, model, keys) || ("OPTION-" + (vi + 1));
+				var frames = getCaptureIframes();
+				var inner = Promise.resolve();
+				frames.forEach(function (ifr) {
+					inner = inner.then(function () {
+						var base = prefix + "_" + fileNameFor(ifr);
+						setStatus("Option " + (vi + 1) + "/" + variants.length + ": capturing " + base + "…");
+						return requestCapture(ifr).then(function (dataUrl) {
+							used[base] = (used[base] || 0) + 1;
+							var name = (used[base] === 1 ? base : base + "_" + used[base]) + ".png";
+							files.push({ name: name, bytes: dataUrlToBytes(dataUrl) });
+						});
+					});
+				});
+				return inner;
+			});
+		});
+
+		function restore() {
+			model.inputs.forEach(function (inp, i) { inp.checked = original[i]; });
+			originalSrcs.forEach(function (o) {
+				if (o.el.isConnected && o.src && o.el.getAttribute("src") !== o.src) o.el.setAttribute("src", o.src);
+			});
+		}
+
+		return chain.then(function () {
+			restore();
+			if (!files.length) { setStatus("Nothing captured."); return; }
+			setStatus("Building ZIP…");
+			var isiId = "";
+			try { isiId = (new URL(location.href).searchParams.get("isiID") || "").replace(/[^\w.\-]/g, ""); } catch (e) {}
+			var zipName = (isiId ? isiId + "_" : "") + "tray-thumbnails_all-options.zip";
+			var dataUrl = "data:application/zip;base64," + bytesToBase64(buildZip(files));
+			return saveData(dataUrl, zipName).then(function () {
+				setStatus("Downloaded " + zipName + " (" + variants.length + " options, " + files.length + " images).");
+			});
+		}).catch(function (err) {
+			restore();
+			setStatus("Error: " + (err && err.message ? err.message : err));
+			console.error("[Tray Thumbnail Downloader]", err);
+		}).then(function () { optionsRunning = false; });
+	}
+
+	function buildOptionsSection(bar) {
+		var model = getOptionModel();
+		if (!hasOptions(model)) return;
+
+		var box = document.createElement("div");
+		box.id = "__trayExtOptions";
+		box.style.cssText = "border-top:1px solid #e0e0e0;margin:6px 0 0;padding-top:6px;";
+
+		var head = document.createElement("div");
+		head.textContent = "Options";
+		head.style.cssText = "font-weight:700;font-size:12px;color:#094548;margin-bottom:3px;";
+		box.appendChild(head);
+
+		var desc = document.createElement("div");
+		desc.style.cssText = "font-size:11px;color:#555;margin-bottom:4px;line-height:1.35;";
+		var multi = model.groups.filter(function (g) { return g.radios.length > 1; });
+		desc.textContent = multi.length
+			? multi.map(function (g) {
+				return g.radios.map(function (r) { return labelFor(r); }).join(" / ");
+			}).join(" × ")
+			: "Checkbox options only.";
+		box.appendChild(desc);
+
+		var varyBoxes = [];
+		if (model.checkboxes.length) {
+			var hint = document.createElement("div");
+			hint.textContent = "Also vary (on + off):";
+			hint.style.cssText = "font-size:11px;color:#444;margin:4px 0 2px;";
+			box.appendChild(hint);
+			model.checkboxes.forEach(function (cb) {
+				var row = document.createElement("label");
+				row.style.cssText = "display:flex;align-items:flex-start;gap:4px;font-size:11px;color:#333;margin:2px 0;cursor:pointer;";
+				var t = document.createElement("input");
+				t.type = "checkbox";
+				t.style.margin = "1px 0 0";
+				t.addEventListener("change", function () {
+					var i = varyBoxes.indexOf(cb);
+					if (t.checked && i < 0) varyBoxes.push(cb);
+					if (!t.checked && i >= 0) varyBoxes.splice(i, 1);
+					updateLabel();
+				});
+				var span = document.createElement("span");
+				span.textContent = labelFor(cb);
+				row.appendChild(t);
+				row.appendChild(span);
+				box.appendChild(row);
+			});
+		}
+
+		var btn = makeButton("");
+		btn.style.background = "#06666b";
+		function updateLabel() {
+			var n = buildVariants(model, varyBoxes).length;
+			btn.textContent = "⬇ All options as ZIP (" + n + " option" + (n === 1 ? "" : "s") + ")";
+		}
+		updateLabel();
+		btn.addEventListener("click", function () {
+			varyBoxes.sort(function (a, b) { return optionIndex(a) - optionIndex(b); });
+			downloadAllOptions(varyBoxes.slice());
+		});
+		box.appendChild(btn);
+		bar.appendChild(box);
+	}
+
 	/* ----------------------------- UI ----------------------------- */
 	function makeButton(label) {
 		var b = document.createElement("button");
@@ -524,6 +939,8 @@
 		b.addEventListener("mouseout", function () { b.style.background = "#094548"; });
 		return b;
 	}
+
+	var includeTbPref = true;
 
 	function buildPanel() {
 		var frames = getTrayIframes();
@@ -544,15 +961,40 @@
 		title.style.cssText = "font-weight:700;font-size:13px;color:#094548;margin-bottom:6px;";
 		bar.appendChild(title);
 
-		var allBtn = makeButton("⬇ Download all (" + frames.length + ")");
+		var tbFrames = getTopToBottomIframes();
+		var allBtn = makeButton("");
 		allBtn.style.background = "#06666b";
 		allBtn.addEventListener("click", downloadAll);
+		var updateAllLabel = function () {
+			allBtn.textContent = "⬇ Download all (" + getCaptureIframes().length + ")";
+		};
+
+		if (tbFrames.length) {
+			var tbRow = document.createElement("label");
+			tbRow.style.cssText = "display:flex;align-items:center;gap:5px;font-size:11px;color:#333;margin:0 0 4px;cursor:pointer;";
+			var tbToggle = document.createElement("input");
+			tbToggle.type = "checkbox";
+			tbToggle.id = "__trayExtIncludeTb";
+			tbToggle.checked = includeTbPref;
+			tbToggle.style.margin = "0";
+			tbToggle.addEventListener("change", function () {
+				includeTbPref = tbToggle.checked;
+				updateAllLabel();
+			});
+			tbRow.appendChild(tbToggle);
+			tbRow.appendChild(document.createTextNode("Include top-to-bottom images"));
+			bar.appendChild(tbRow);
+		}
+
+		updateAllLabel();
 		bar.appendChild(allBtn);
 
 		var zipBtn = makeButton("⬇ Download all as ZIP");
 		zipBtn.style.background = "#06666b";
 		zipBtn.addEventListener("click", downloadAllZip);
 		bar.appendChild(zipBtn);
+
+		buildOptionsSection(bar);
 
 		var sep = document.createElement("div");
 		sep.style.cssText = "border-top:1px solid #e0e0e0;margin:6px 0;";
@@ -566,6 +1008,18 @@
 			btn.addEventListener("click", function () { downloadOne(ifr); });
 			bar.appendChild(btn);
 		});
+
+		if (tbFrames.length) {
+			var tbSep = document.createElement("div");
+			tbSep.textContent = "Top-to-bottom";
+			tbSep.style.cssText = "border-top:1px solid #e0e0e0;margin:6px 0 3px;padding-top:6px;font-size:11px;font-weight:700;color:#094548;";
+			bar.appendChild(tbSep);
+			tbFrames.forEach(function (ifr) {
+				var btn = makeButton("⬇ " + (bannerSizeOf(ifr) || "ISI") + " top-to-bottom");
+				btn.addEventListener("click", function () { downloadOne(ifr); });
+				bar.appendChild(btn);
+			});
+		}
 
 		var status = document.createElement("div");
 		status.id = "__trayExtStatus";
@@ -597,6 +1051,8 @@
 			var frames = getTrayIframes();
 			var bar = document.getElementById("__trayExtBar");
 			if (frames.length && !bar) buildPanel();
+			else if (bar && !optionsRunning && !document.getElementById("__trayExtOptions") &&
+				hasOptions(getOptionModel())) buildPanel();
 		}, 400);
 	});
 	if (document.body) observer.observe(document.body, { childList: true, subtree: true });
