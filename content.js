@@ -20,7 +20,18 @@
 	 * Shared: scrollbar drawing (html2canvas does not render scrollbars)
 	 * ------------------------------------------------------------------ */
 	function getScrollbarStyle(scrollEl) {
-		var style = { width: 9, trackColor: "#ffffff", thumbColor: "#037d99", radius: 4, thumbBorder: 0 };
+		var style = { width: 9, trackColor: "#ffffff", thumbColor: "#037d99", radius: 4, thumbBorder: 0,
+			trackB: null, thumbB: null };
+		var sideBorders = function (st) {
+			var o = { l: 0, r: 0, t: 0, b: 0, color: "" };
+			var any = false;
+			[["l", "Left"], ["r", "Right"], ["t", "Top"], ["b", "Bottom"]].forEach(function (p) {
+				var sty = st["border" + p[1] + "Style"];
+				var w = parseFloat(st["border" + p[1] + "Width"]);
+				if (sty && sty !== "none" && w > 0) { o[p[0]] = w; any = true; if (!o.color) o.color = st["border" + p[1] + "Color"] || ""; }
+			});
+			return any ? o : null;
+		};
 		try {
 			var sheets = document.styleSheets;
 			for (var i = 0; i < sheets.length; i++) {
@@ -41,6 +52,8 @@
 					if (/::-webkit-scrollbar$/.test(sel)) {
 						if (st.width) style.width = parseInt(st.width, 10) || style.width;
 						if (st.backgroundColor) style.trackColor = st.backgroundColor;
+						var tb = sideBorders(st);
+						if (tb) style.trackB = tb;
 					}
 					if (/::-webkit-scrollbar-thumb/.test(sel)) {
 						if (st.backgroundColor) style.thumbColor = st.backgroundColor;
@@ -48,6 +61,8 @@
 						var bw = st.borderTopWidth || st.borderWidth || "";
 						if (!bw && st.border) { var mm = st.border.match(/(\d+(?:\.\d+)?)px/); if (mm) bw = mm[1] + "px"; }
 						if (bw) style.thumbBorder = parseFloat(bw) || 0;
+						var thb = sideBorders(st);
+						if (thb && !thb.t && !thb.b) style.thumbB = thb;
 					}
 				}
 			}
@@ -103,9 +118,38 @@
 		if (thumbYCss + thumbHCss > yCss + trackH) thumbYCss = yCss + trackH - thumbHCss;
 
 		var ctx = canvas.getContext("2d");
+		var S = drawScale;
+		var fillBox = function (x, y, w, h, color) {
+			ctx.fillStyle = color;
+			ctx.fillRect(x * S, y * S, w * S, h * S);
+		};
+		// Chrome paints the element background under its borders, so draw the
+		// fill over the whole box and then the borders on top.
+		var drawBorders = function (bd, x, y, w, h) {
+			if (!bd) return;
+			var c = bd.color || "#ffffff";
+			if (bd.l) fillBox(x, y, bd.l, h, c);
+			if (bd.r) fillBox(x + w - bd.r, y, bd.r, h, c);
+			if (bd.t) fillBox(x, y, w, bd.t, c);
+			if (bd.b) fillBox(x, y + h - bd.b, w, bd.b, c);
+		};
+
 		// Track (the scrollbar gutter is reserved, so this does not cover text).
-		ctx.fillStyle = sb.trackColor;
-		ctx.fillRect(xCss * drawScale, yCss * drawScale, barW * drawScale, trackH * drawScale);
+		fillBox(xCss, yCss, barW, trackH, sb.trackColor);
+		drawBorders(sb.trackB, xCss, yCss, barW, trackH);
+
+		if (sb.thumbB) {
+			var rad0 = Math.min(sb.radius, barW / 2, thumbHCss / 2);
+			if (rad0 > 0) {
+				ctx.fillStyle = sb.thumbColor;
+				roundRect(ctx, xCss * S, thumbYCss * S, barW * S, thumbHCss * S, rad0 * S);
+				ctx.fill();
+			} else {
+				fillBox(xCss, thumbYCss, barW, thumbHCss, sb.thumbColor);
+			}
+			drawBorders(sb.thumbB, xCss, thumbYCss, barW, thumbHCss);
+			return;
+		}
 
 		// Thumb: the CSS thumb has a border the same color as the track, which
 		// insets the visible fill. Reproduce that inset so the pill matches.
@@ -115,7 +159,7 @@
 		var th = Math.max(thumbHCss - 2 * border, 1);
 		var rad = Math.min(sb.radius, tw / 2, th / 2);
 		ctx.fillStyle = sb.thumbColor;
-		roundRect(ctx, tx * drawScale, ty * drawScale, tw * drawScale, th * drawScale, rad * drawScale);
+		roundRect(ctx, tx * S, ty * S, tw * S, th * S, rad * S);
 		ctx.fill();
 	}
 
