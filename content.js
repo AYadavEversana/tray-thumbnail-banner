@@ -404,24 +404,15 @@
 		return /toptobottom\//.test(iframe.getAttribute("src") || "");
 	}
 
-	function includeTopToBottom() {
-		var t = document.getElementById("__trayExtIncludeTb");
-		return !t || t.checked;
+	// kind: "tray" (actual-size thumbnails) or "toptobottom" (full ISI).
+	function framesFor(kind) {
+		return kind === "toptobottom" ? getTopToBottomIframes() : getTrayIframes();
 	}
 
-	// Frames to capture for "all" downloads: each tray, followed by its
-	// top-to-bottom view when that option is on.
-	function getCaptureIframes() {
-		var trays = getTrayIframes();
-		if (!includeTopToBottom()) return trays;
-		var tbs = getTopToBottomIframes();
-		var out = [];
-		trays.forEach(function (ifr, i) {
-			out.push(ifr);
-			if (tbs[i]) out.push(tbs[i]);
-		});
-		for (var j = trays.length; j < tbs.length; j++) out.push(tbs[j]);
-		return out;
+	function zipNameFor(kind) {
+		var isiId = "";
+		try { isiId = (new URL(location.href).searchParams.get("isiID") || "").replace(/[^\w.\-]/g, ""); } catch (e) {}
+		return (isiId ? isiId + "_" : "") + (kind === "toptobottom" ? "toptobottom" : "tray-thumbnails") + ".zip";
 	}
 
 	function bannerSizeOf(iframe) {
@@ -474,35 +465,9 @@
 		});
 	}
 
-	function saveImage(dataUrl, fileName) {
-		return saveData(dataUrl, fileName + ".png");
-	}
-
 	function setStatus(text) {
 		var s = document.getElementById("__trayExtStatus");
 		if (s) s.textContent = text || "";
-	}
-
-	function downloadOne(iframe) {
-		setStatus("Capturing " + fileNameFor(iframe) + "…");
-		return requestCapture(iframe)
-			.then(function (dataUrl) { return saveImage(dataUrl, fileNameFor(iframe)); })
-			.then(function () { setStatus("Downloaded " + fileNameFor(iframe)); })
-			.catch(function (err) {
-				setStatus("Error: " + (err && err.message ? err.message : err));
-				console.error("[Tray Thumbnail Downloader]", err);
-			});
-	}
-
-	function downloadAll() {
-		var frames = getCaptureIframes();
-		if (!frames.length) { setStatus("No tray thumbnails found on this page."); return Promise.resolve(); }
-		var chain = Promise.resolve();
-		frames.forEach(function (ifr) {
-			chain = chain.then(function () { return downloadOne(ifr); })
-				.then(function () { return new Promise(function (r) { setTimeout(r, 400); }); });
-		});
-		return chain.then(function () { setStatus("Done. Downloaded " + frames.length + " thumbnail(s)."); });
 	}
 
 	/* --------- ZIP (store method, no compression; PNGs are already compressed) --------- */
@@ -583,37 +548,53 @@
 		return out;
 	}
 
-	function downloadAllZip() {
-		var frames = getCaptureIframes();
-		if (!frames.length) { setStatus("No tray thumbnails found on this page."); return Promise.resolve(); }
+	function errorStatus(err) {
+		setStatus("Error: " + (err && err.message ? err.message : err));
+		console.error("[Tray Thumbnail Downloader]", err);
+	}
 
-		var files = [];
-		var counts = {};
+	// Capture frames into files[]; prefix (optional) is prepended to each name.
+	function captureFrames(frames, files, used, prefix, label) {
 		var chain = Promise.resolve();
 		frames.forEach(function (ifr) {
 			chain = chain.then(function () {
-				setStatus("Capturing " + fileNameFor(ifr) + "…");
+				var base = (prefix ? prefix + "_" : "") + fileNameFor(ifr);
+				setStatus((label || "") + "Capturing " + base + "…");
 				return requestCapture(ifr).then(function (dataUrl) {
-					var base = fileNameFor(ifr);
-					counts[base] = (counts[base] || 0) + 1;
-					var name = (counts[base] === 1 ? base : base + "_" + counts[base]) + ".png";
+					used[base] = (used[base] || 0) + 1;
+					var name = (used[base] === 1 ? base : base + "_" + used[base]) + ".png";
 					files.push({ name: name, bytes: dataUrlToBytes(dataUrl) });
 				});
 			});
 		});
+		return chain;
+	}
 
-		return chain.then(function () {
-			if (!files.length) { setStatus("Nothing captured."); return; }
-			setStatus("Building ZIP…");
-			var zip = buildZip(files);
-			var dataUrl = "data:application/zip;base64," + bytesToBase64(zip);
-			return saveData(dataUrl, "tray-thumbnails.zip").then(function () {
-				setStatus("Downloaded tray-thumbnails.zip (" + files.length + " images).");
-			});
-		}).catch(function (err) {
-			setStatus("Error: " + (err && err.message ? err.message : err));
-			console.error("[Tray Thumbnail Downloader]", err);
+	function saveZip(files, zipName, extra) {
+		if (!files.length) { setStatus("Nothing captured."); return Promise.resolve(); }
+		setStatus("Building ZIP…");
+		var dataUrl = "data:application/zip;base64," + bytesToBase64(buildZip(files));
+		return saveData(dataUrl, zipName).then(function () {
+			setStatus("Downloaded " + zipName + " (" + (extra || "") + files.length + " images).");
 		});
+	}
+
+	var busy = false;
+
+	function downloadKind(kind) {
+		if (busy) return Promise.resolve();
+		if (hasOptions(getOptionModel())) return downloadAllOptions(kind);
+		var frames = framesFor(kind);
+		if (!frames.length) {
+			setStatus(kind === "toptobottom" ? "No top-to-bottom previews found on this page." : "No tray thumbnails found on this page.");
+			return Promise.resolve();
+		}
+		busy = true;
+		var files = [];
+		return captureFrames(frames, files, {}, "", "")
+			.then(function () { return saveZip(files, zipNameFor(kind)); })
+			.catch(errorStatus)
+			.then(function () { busy = false; });
 	}
 
 	/* ------------------------- All options ------------------------- *
@@ -757,14 +738,14 @@
 
 	function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-	function frameTokens() {
-		return Promise.all(getCaptureIframes().map(function (f) { return pingFrame(f, 800); }));
+	function frameTokens(kind) {
+		return Promise.all(framesFor(kind).map(function (f) { return pingFrame(f, 800); }));
 	}
 
-	function waitForReload(oldTokens, timeoutMs) {
+	function waitForReload(kind, oldTokens, timeoutMs) {
 		var deadline = Date.now() + (timeoutMs || 25000);
 		function poll() {
-			return frameTokens().then(function (tokens) {
+			return frameTokens(kind).then(function (tokens) {
 				var ready = tokens.length > 0 && tokens.every(function (t, i) { return t && t !== oldTokens[i]; });
 				if (ready) return true;
 				if (Date.now() > deadline) return false;
@@ -780,32 +761,37 @@
 			.filter(function (b) { return /refresh/i.test(b.value || b.textContent || ""); })[0] || null;
 	}
 
-	function applyVariant(variant, model) {
+	function applyVariant(variant, kind) {
 		variant.forEach(function (s) { s.input.checked = s.checked; });
 		var btn = findRefreshButton();
 		if (!btn) return Promise.reject(new Error("Couldn't find the viewer's \"Refresh Page\" button."));
-		return frameTokens().then(function (oldTokens) {
+		return frameTokens(kind).then(function (oldTokens) {
 			btn.click();
-			return waitForReload(oldTokens);
+			return waitForReload(kind, oldTokens);
 		}).then(function (ok) {
 			if (!ok) console.warn("[Tray Thumbnail Downloader] Frames did not confirm reload in time; capturing anyway.");
 			return sleep(2500); // let fonts/GSAP finish laying out the ISI
 		});
 	}
 
-	var optionsRunning = false;
+	// Checkboxes the user ticked under "Also vary (on + off)".
+	var varyBoxes = [];
 
-	function downloadAllOptions(varyBoxes) {
-		if (optionsRunning) return Promise.resolve();
+	function downloadAllOptions(kind) {
 		var model = getOptionModel();
-		if (!hasOptions(model)) { setStatus("This viewer has no options."); return Promise.resolve(); }
-		var variants = buildVariants(model, varyBoxes || []);
-		var frameCount = getCaptureIframes().length;
+		var boxes = varyBoxes.filter(function (cb) { return cb.isConnected; })
+			.sort(function (a, b) { return optionIndex(a) - optionIndex(b); });
+		var variants = buildVariants(model, boxes);
+		var frameCount = framesFor(kind).length;
+		if (!frameCount) {
+			setStatus(kind === "toptobottom" ? "No top-to-bottom previews found on this page." : "No tray thumbnails found on this page.");
+			return Promise.resolve();
+		}
 		if (variants.length * frameCount > 120 &&
-			!window.confirm(variants.length + " option combinations × " + frameCount + " frames = " +
+			!window.confirm(variants.length + " option combinations × " + frameCount + " sizes = " +
 				(variants.length * frameCount) + " images. Continue?")) return Promise.resolve();
 
-		optionsRunning = true;
+		busy = true;
 		var original = model.inputs.map(function (inp) { return inp.checked; });
 		var originalSrcs = Array.prototype.slice.call(document.querySelectorAll("iframe")).map(function (f) {
 			return { el: f, src: f.getAttribute("src") };
@@ -816,26 +802,14 @@
 		var chain = Promise.resolve();
 
 		variants.forEach(function (variant, vi) {
+			var label = "Option " + (vi + 1) + "/" + variants.length + ": ";
 			chain = chain.then(function () {
-				setStatus("Option " + (vi + 1) + "/" + variants.length + ": rendering…");
-				return applyVariant(variant, model);
+				setStatus(label + "rendering…");
+				return applyVariant(variant, kind);
 			}).then(function () {
 				if (!Object.keys(keys).length) keys = readOptionKeys(model);
 				var prefix = prefixFor(variant, model, keys) || ("OPTION-" + (vi + 1));
-				var frames = getCaptureIframes();
-				var inner = Promise.resolve();
-				frames.forEach(function (ifr) {
-					inner = inner.then(function () {
-						var base = prefix + "_" + fileNameFor(ifr);
-						setStatus("Option " + (vi + 1) + "/" + variants.length + ": capturing " + base + "…");
-						return requestCapture(ifr).then(function (dataUrl) {
-							used[base] = (used[base] || 0) + 1;
-							var name = (used[base] === 1 ? base : base + "_" + used[base]) + ".png";
-							files.push({ name: name, bytes: dataUrlToBytes(dataUrl) });
-						});
-					});
-				});
-				return inner;
+				return captureFrames(framesFor(kind), files, used, prefix, label);
 			});
 		});
 
@@ -848,20 +822,11 @@
 
 		return chain.then(function () {
 			restore();
-			if (!files.length) { setStatus("Nothing captured."); return; }
-			setStatus("Building ZIP…");
-			var isiId = "";
-			try { isiId = (new URL(location.href).searchParams.get("isiID") || "").replace(/[^\w.\-]/g, ""); } catch (e) {}
-			var zipName = (isiId ? isiId + "_" : "") + "tray-thumbnails_all-options.zip";
-			var dataUrl = "data:application/zip;base64," + bytesToBase64(buildZip(files));
-			return saveData(dataUrl, zipName).then(function () {
-				setStatus("Downloaded " + zipName + " (" + variants.length + " options, " + files.length + " images).");
-			});
+			return saveZip(files, zipNameFor(kind), variants.length + " options, ");
 		}).catch(function (err) {
 			restore();
-			setStatus("Error: " + (err && err.message ? err.message : err));
-			console.error("[Tray Thumbnail Downloader]", err);
-		}).then(function () { optionsRunning = false; });
+			errorStatus(err);
+		}).then(function () { busy = false; });
 	}
 
 	function buildOptionsSection(bar) {
@@ -887,7 +852,13 @@
 			: "Checkbox options only.";
 		box.appendChild(desc);
 
-		var varyBoxes = [];
+		varyBoxes = [];
+		var count = document.createElement("div");
+		count.style.cssText = "font-size:11px;color:#094548;margin-top:4px;font-weight:700;";
+		function updateLabel() {
+			var n = buildVariants(model, varyBoxes).length;
+			count.textContent = "Each download includes " + n + " option" + (n === 1 ? "" : "s") + ".";
+		}
 		if (model.checkboxes.length) {
 			var hint = document.createElement("div");
 			hint.textContent = "Also vary (on + off):";
@@ -913,18 +884,8 @@
 			});
 		}
 
-		var btn = makeButton("");
-		btn.style.background = "#06666b";
-		function updateLabel() {
-			var n = buildVariants(model, varyBoxes).length;
-			btn.textContent = "⬇ All options as ZIP (" + n + " option" + (n === 1 ? "" : "s") + ")";
-		}
 		updateLabel();
-		btn.addEventListener("click", function () {
-			varyBoxes.sort(function (a, b) { return optionIndex(a) - optionIndex(b); });
-			downloadAllOptions(varyBoxes.slice());
-		});
-		box.appendChild(btn);
+		box.appendChild(count);
 		bar.appendChild(box);
 	}
 
@@ -939,8 +900,6 @@
 		b.addEventListener("mouseout", function () { b.style.background = "#094548"; });
 		return b;
 	}
-
-	var includeTbPref = true;
 
 	function buildPanel() {
 		var frames = getTrayIframes();
@@ -961,65 +920,18 @@
 		title.style.cssText = "font-weight:700;font-size:13px;color:#094548;margin-bottom:6px;";
 		bar.appendChild(title);
 
-		var tbFrames = getTopToBottomIframes();
-		var allBtn = makeButton("");
-		allBtn.style.background = "#06666b";
-		allBtn.addEventListener("click", downloadAll);
-		var updateAllLabel = function () {
-			allBtn.textContent = "⬇ Download all (" + getCaptureIframes().length + ")";
-		};
+		var trayBtn = makeButton("⬇ Download all tray (" + frames.length + ")");
+		trayBtn.addEventListener("click", function () { downloadKind("tray"); });
+		bar.appendChild(trayBtn);
 
-		if (tbFrames.length) {
-			var tbRow = document.createElement("label");
-			tbRow.style.cssText = "display:flex;align-items:center;gap:5px;font-size:11px;color:#333;margin:0 0 4px;cursor:pointer;";
-			var tbToggle = document.createElement("input");
-			tbToggle.type = "checkbox";
-			tbToggle.id = "__trayExtIncludeTb";
-			tbToggle.checked = includeTbPref;
-			tbToggle.style.margin = "0";
-			tbToggle.addEventListener("change", function () {
-				includeTbPref = tbToggle.checked;
-				updateAllLabel();
-			});
-			tbRow.appendChild(tbToggle);
-			tbRow.appendChild(document.createTextNode("Include top-to-bottom images"));
-			bar.appendChild(tbRow);
+		var tbCount = getTopToBottomIframes().length;
+		if (tbCount) {
+			var tbBtn = makeButton("⬇ Download all top-to-bottom (" + tbCount + ")");
+			tbBtn.addEventListener("click", function () { downloadKind("toptobottom"); });
+			bar.appendChild(tbBtn);
 		}
-
-		updateAllLabel();
-		bar.appendChild(allBtn);
-
-		var zipBtn = makeButton("⬇ Download all as ZIP");
-		zipBtn.style.background = "#06666b";
-		zipBtn.addEventListener("click", downloadAllZip);
-		bar.appendChild(zipBtn);
 
 		buildOptionsSection(bar);
-
-		var sep = document.createElement("div");
-		sep.style.cssText = "border-top:1px solid #e0e0e0;margin:6px 0;";
-		bar.appendChild(sep);
-
-		frames.forEach(function (ifr) {
-			var banner = bannerSizeOf(ifr) || "tray";
-			var w = ifr.getAttribute("width") || ifr.offsetWidth;
-			var h = ifr.getAttribute("height") || ifr.offsetHeight;
-			var btn = makeButton("⬇ " + banner + " (" + w + "x" + h + ")");
-			btn.addEventListener("click", function () { downloadOne(ifr); });
-			bar.appendChild(btn);
-		});
-
-		if (tbFrames.length) {
-			var tbSep = document.createElement("div");
-			tbSep.textContent = "Top-to-bottom";
-			tbSep.style.cssText = "border-top:1px solid #e0e0e0;margin:6px 0 3px;padding-top:6px;font-size:11px;font-weight:700;color:#094548;";
-			bar.appendChild(tbSep);
-			tbFrames.forEach(function (ifr) {
-				var btn = makeButton("⬇ " + (bannerSizeOf(ifr) || "ISI") + " top-to-bottom");
-				btn.addEventListener("click", function () { downloadOne(ifr); });
-				bar.appendChild(btn);
-			});
-		}
 
 		var status = document.createElement("div");
 		status.id = "__trayExtStatus";
@@ -1051,7 +963,7 @@
 			var frames = getTrayIframes();
 			var bar = document.getElementById("__trayExtBar");
 			if (frames.length && !bar) buildPanel();
-			else if (bar && !optionsRunning && !document.getElementById("__trayExtOptions") &&
+			else if (bar && !busy && !document.getElementById("__trayExtOptions") &&
 				hasOptions(getOptionModel())) buildPanel();
 		}, 400);
 	});

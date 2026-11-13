@@ -36,47 +36,37 @@ page, with no changes to the client files. Install it once and use it anywhere.
 1. Open any `.../toptobottomviewer/index.htm` preview page.
 2. A **Tray Thumbnails** panel appears at the top-right of the page.
 3. Wait until the tray previews have finished loading/animating.
-4. Choose one of:
-   - **Download all as ZIP** — one `tray-thumbnails.zip` with every thumbnail.
-   - **Download all** — each thumbnail as a separate PNG.
-   - An individual size — downloads just that one.
-   - An individual **top-to-bottom** size (listed under *Top-to-bottom*) —
-     the full, expanded ISI for that size as one tall PNG.
+4. Click one of the two buttons:
+   - **⬇ Download all tray**: every tray-size thumbnail in one
+     `<isiID>_tray-thumbnails.zip`.
+   - **⬇ Download all top-to-bottom**: the full, expanded ISI for every size
+     in one `<isiID>_toptobottom.zip`.
 
-Files are saved to your Downloads folder, named by banner size and ISI version,
-e.g. `728x90_v.1.0.15.png` (tray) and `728x90_toptobottom_v.1.0.15.png`
-(top-to-bottom).
+Files inside each ZIP are named by banner size and ISI version, e.g.
+`728x90_v.1.0.15.png` (tray) and `728x90_toptobottom_v.1.0.15.png`
+(top-to-bottom). Top-to-bottom images are cropped to the ISI's real height, not
+the viewer's 20000px frame, and keep the ISI's empty scrollbar gutter.
 
-### Top-to-bottom images
-
-**Include top-to-bottom images** is ticked by default. While it's ticked,
-**Download all**, **Download all as ZIP** and **All options as ZIP** also save
-the full top-to-bottom ISI for each size, next to its tray thumbnail. The
-image is cropped to the ISI's real height, not the viewer's 20000px frame, and
-keeps the ISI's empty scrollbar gutter. Untick it to download tray thumbnails
-only.
-
-### All options (PAN / SUNLIGHT, colour schemes, indications…)
+### Viewers with options (PAN / SUNLIGHT, colour schemes, indications…)
 
 Some viewers have option inputs, such as TAI_LON_HCP's *Pan version* /
-*Sunlight version* radios, opening-statement variants or checkboxes. When a
-viewer has them, the panel shows an **Options** section with an
-**⬇ All options as ZIP** button. It:
+*Sunlight version* radios, opening-statement variants or checkboxes. On those
+viewers the panel shows an **Options** section, and both buttons download
+**every option** automatically:
 
-1. selects each combination of the radio options (every group is combined, e.g.
-   2 header × 2 footer = 4), clicks the viewer's own **Refresh Page**, and waits
-   for the trays to re-render;
-2. captures every tray size, plus its top-to-bottom image when that option is
-   ticked, for that combination;
-3. saves one `<isiID>_tray-thumbnails_all-options.zip`, with the option prefixed
-   to each file name, e.g. `PAN_160x600_v.1.0.15.png`,
-   `SUNLIGHT_160x600_v.1.0.15.png`, `SUNLIGHT_160x600_toptobottom_v.1.0.15.png`;
-4. puts the inputs and previews back the way they were.
+1. each combination of the radio options is selected (every group is combined,
+   e.g. 2 header × 2 footer = 4), the viewer's own **Refresh Page** is clicked,
+   and the previews are given time to re-render;
+2. every size is captured for that combination;
+3. the option is prefixed to each file name, e.g. `PAN_160x600_v.1.0.15.png`
+   and `SUNLIGHT_160x600_v.1.0.15.png` in the tray ZIP, or
+   `SUNLIGHT_160x600_toptobottom_v.1.0.15.png` in the top-to-bottom ZIP;
+4. the inputs and previews are put back the way they were.
 
 Checkboxes keep their current state by default. Tick any of them under
 **Also vary (on + off)** to capture both states too. They are named `KEY` and
-`NO-KEY`, e.g. `AD_BRUSHSTROKE_…` and `AD_NO-BRUSHSTROKE_…`. The button shows
-how many combinations will be captured.
+`NO-KEY`, e.g. `AD_BRUSHSTROKE_…` and `AD_NO-BRUSHSTROKE_…`. The panel shows
+how many combinations each download will include.
 
 Prefixes come from the option keys in the ISI's `config.js`. A leading `show`
 and a trailing `colorScheme` are dropped, so `showPan` becomes `PAN` and
