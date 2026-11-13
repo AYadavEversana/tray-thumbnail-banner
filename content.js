@@ -465,6 +465,39 @@
 		});
 	}
 
+	/* ----------------------- My Day activity ----------------------- */
+	// Where this viewer sits in the repo: clients/<Client>/<Brand…>/<ISI>/<status>/lib/toptobottomviewer/
+	function viewerInfo() {
+		var path = "";
+		try { path = decodeURIComponent(location.pathname); } catch (e) { path = location.pathname; }
+		var q = {};
+		try { new URL(location.href).searchParams.forEach(function (v, k) { q[k] = v; }); } catch (e) {}
+		var parts = [];
+		var m = /\/clients\/(.+?)\/lib\/toptobottomviewer\//.exec(path);
+		if (m) parts = m[1].split("/").filter(Boolean);
+		else {
+			var m2 = /([^\/]+)\/([^\/]+)\/lib\/toptobottomviewer\//.exec(path);
+			if (m2) parts = [m2[1], m2[2]];
+		}
+		var status = parts.length > 1 ? parts[parts.length - 1] : "";
+		var folder = parts.length > 1 ? parts[parts.length - 2] : "";
+		return {
+			key: parts.length ? parts.join("/") : (q.isiID || location.pathname),
+			isiID: q.isiID || folder || "ISI",
+			client: parts.length > 2 ? parts[0] : "",
+			brand: parts.length > 3 ? parts.slice(1, -2).join(" / ") : "",
+			status: status,
+			version: (q.isiVer || "").replace(/^v\.?/i, ""),
+			url: location.href.split("#")[0]
+		};
+	}
+
+	function logActivity(evt) {
+		evt.isi = viewerInfo();
+		evt.at = Date.now();
+		try { chrome.runtime.sendMessage({ type: "__trayExtActivity", evt: evt }, function () { void chrome.runtime.lastError; }); } catch (e) {}
+	}
+
 	function setStatus(text) {
 		var s = document.getElementById("__trayExtStatus");
 		if (s) s.textContent = text || "";
@@ -576,6 +609,7 @@
 		var dataUrl = "data:application/zip;base64," + bytesToBase64(buildZip(files));
 		return saveData(dataUrl, zipName).then(function () {
 			setStatus("Downloaded " + zipName + " (" + (extra || "") + files.length + " images).");
+			return files.length;
 		});
 	}
 
@@ -593,6 +627,7 @@
 		var files = [];
 		return captureFrames(frames, files, {}, "", "")
 			.then(function () { return saveZip(files, zipNameFor(kind)); })
+			.then(function (n) { if (n) logActivity({ type: "download", kind: kind, options: 0, images: n }); })
 			.catch(errorStatus)
 			.then(function () { busy = false; });
 	}
@@ -822,7 +857,9 @@
 
 		return chain.then(function () {
 			restore();
-			return saveZip(files, zipNameFor(kind), variants.length + " options, ");
+			return saveZip(files, zipNameFor(kind), variants.length + " options, ").then(function (n) {
+				if (n) logActivity({ type: "download", kind: kind, options: variants.length, images: n });
+			});
 		}).catch(function (err) {
 			restore();
 			errorStatus(err);
@@ -901,6 +938,39 @@
 		return b;
 	}
 
+	function makeFavStar() {
+		var star = document.createElement("button");
+		star.id = "__trayExtFav";
+		star.style.cssText = "border:none;background:none;padding:0 2px;font-size:17px;line-height:17px;cursor:pointer;color:#b9c4c4;";
+		var info = viewerInfo();
+		var on = false;
+		function paint() {
+			star.textContent = on ? "★" : "☆";
+			star.style.color = on ? "#e0a800" : "#9aa8a8";
+			star.title = on ? "Remove from My Day favourites" : "Add to My Day favourites";
+		}
+		paint();
+		try {
+			chrome.storage.local.get("favorites", function (d) {
+				on = !!(d && d.favorites && d.favorites[info.key]);
+				paint();
+			});
+		} catch (e) { star.style.display = "none"; }
+		star.addEventListener("click", function () {
+			try {
+				chrome.storage.local.get("favorites", function (d) {
+					var favs = (d && d.favorites) || {};
+					if (favs[info.key]) delete favs[info.key];
+					else favs[info.key] = Object.assign({}, info, { addedAt: Date.now() });
+					on = !!favs[info.key];
+					paint();
+					chrome.storage.local.set({ favorites: favs });
+				});
+			} catch (e) { setStatus("Reload this page after updating the extension."); }
+		});
+		return star;
+	}
+
 	function buildPanel() {
 		var frames = getTrayIframes();
 		if (!frames.length) return false;
@@ -916,8 +986,9 @@
 			"box-shadow:0 4px 14px rgba(0,0,0,.25);font-family:Arial,sans-serif;";
 
 		var title = document.createElement("div");
-		title.textContent = "Tray Thumbnails";
-		title.style.cssText = "font-weight:700;font-size:13px;color:#094548;margin-bottom:6px;";
+		title.style.cssText = "display:flex;align-items:center;justify-content:space-between;font-weight:700;font-size:13px;color:#094548;margin-bottom:6px;";
+		title.appendChild(document.createTextNode("Tray Thumbnails"));
+		title.appendChild(makeFavStar());
 		bar.appendChild(title);
 
 		var trayBtn = makeButton("⬇ Download all tray (" + frames.length + ")");
@@ -933,6 +1004,19 @@
 
 		buildOptionsSection(bar);
 
+		var mdBtn = makeButton("📅 My Day – switcher, recent, changes, summary");
+		mdBtn.style.marginTop = "8px";
+		mdBtn.style.background = "#fff";
+		mdBtn.style.color = "#094548";
+		mdBtn.style.border = "1px solid #094548";
+		mdBtn.addEventListener("mouseover", function () { mdBtn.style.background = "#e6f0f0"; });
+		mdBtn.addEventListener("mouseout", function () { mdBtn.style.background = "#fff"; });
+		mdBtn.addEventListener("click", function () {
+			try { chrome.runtime.sendMessage({ type: "__trayExtOpenMyDay" }); }
+			catch (e) { setStatus("Reload this page after updating the extension."); }
+		});
+		bar.appendChild(mdBtn);
+
 		var status = document.createElement("div");
 		status.id = "__trayExtStatus";
 		status.style.cssText = "margin-top:8px;font-size:11px;color:#444;min-height:14px;";
@@ -944,6 +1028,8 @@
 
 	// The viewer builds its tray iframes dynamically, so retry until they exist
 	// and keep the panel in sync if the grid changes.
+	logActivity({ type: "view" });
+
 	var tries = 0;
 	function tryBuild() {
 		if (buildPanel()) return;

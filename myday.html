@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>My Day – ISI tools</title>
+	<link rel="stylesheet" href="myday.css">
+</head>
+<body>
+	<header>
+		<h1>My Day</h1>
+		<span id="todayLabel"></span>
+	</header>
+
+	<main>
+		<section id="switcher" class="card wide">
+			<h2>Quick ISI switcher</h2>
+			<input id="q" type="search" autocomplete="off" spellcheck="false"
+				placeholder="Type an ISI ID, client or brand, e.g. LON, Taiho, Rinvoq   (press / to focus)">
+			<ul id="results" class="list"></ul>
+			<div id="searchHint" class="hint"></div>
+		</section>
+
+		<section id="favorites" class="card">
+			<h2>★ Favourites <span id="favCount" class="count"></span></h2>
+			<ul id="favList" class="list"></ul>
+		</section>
+
+		<section id="pending" class="card">
+			<h2>Pending queue <span id="pendingCount" class="count"></span></h2>
+			<ul id="pendingList" class="list"></ul>
+		</section>
+
+		<section id="recent" class="card">
+			<h2>Recent ISIs</h2>
+			<ul id="recentList" class="list"></ul>
+		</section>
+
+		<section id="changes" class="card">
+			<h2>What changed since yesterday</h2>
+			<div class="toolbar">
+				<button id="connectBtn" type="button">Connect repo folder…</button>
+				<button id="rescanBtn" type="button" hidden>Rescan</button>
+				<span id="scanStatus" class="hint"></span>
+			</div>
+			<ul id="changeList" class="list"></ul>
+		</section>
+
+		<section id="summary" class="card wide">
+			<h2>Daily summary</h2>
+			<div class="toolbar">
+				<select id="daySelect"></select>
+				<label><input id="incFiles" type="checkbox" checked> Include repo file changes</label>
+				<button id="copyBtn" type="button" class="primary">Copy summary</button>
+				<span id="copyStatus" class="hint"></span>
+			</div>
+			<textarea id="summaryText" readonly rows="10"></textarea>
+		</section>
+	</main>
+
+	<footer>
+		<label for="baseUrl">Viewer base URL</label>
+		<input id="baseUrl" type="text" spellcheck="false" placeholder="e.g. file:///Users/you/Banners_TheBrief_ISIs/">
+		<button id="saveBase" type="button">Save</button>
+		<span id="baseHint" class="hint"></span>
+	</footer>
+
+	<script src="myday.js"></script>
+</body>
+</html>

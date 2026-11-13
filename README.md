@@ -7,6 +7,10 @@ screenshot tool or `html2canvas` capture would miss.
 It works on **every brand/client** that uses the standard `toptobottomviewer`
 page, with no changes to the client files. Install it once and use it anywhere.
 
+The toolbar icon also opens **[My Day](#my-day-daily-dashboard)**. It offers a
+quick ISI switcher, favourites, a pending queue, your recent ISIs, what changed in the repo since yesterday,
+and a copy-ready daily summary.
+
 ## How it works
 
 - The capture runs **inside each tray preview frame** and the image is sent back
@@ -73,13 +77,70 @@ and a trailing `colorScheme` are dropped, so `showPan` becomes `PAN` and
 `GBWcolorScheme` becomes `GBW`. If two groups share a key (for example header
 and footer both have `bog`), the group name is added: `HEADER-BOG_FOOTER-WOB_…`.
 
+## My Day (daily dashboard)
+
+Click the extension's **toolbar icon**, or the **📅 My Day** button at the
+bottom of the viewer panel, to open **My Day**. (To see the toolbar icon, pin
+the extension from Chrome's puzzle-piece menu.) It has these cards:
+
+- **Quick ISI switcher:** type part of an ISI ID, client or brand (for example
+  `lon` or `taiho`). Use ↑/↓ to move and **Enter** to open that ISI's
+  top-to-bottom viewer in a new tab. Press `/` anywhere to jump to the search box.
+- **★ Favourites:** click ☆ next to any ISI in My Day, or the ☆ in the
+  viewer panel's title, to pin it. Favourites stay in this card, rank higher in
+  the switcher, and sync live between the panel and My Day.
+- **Pending queue:** every ISI that has a `pending` folder (after you connect
+  the repo folder), with the longest-waiting first. Each row shows:
+  - how long it has waited (amber at 3+ days, red at 7+);
+  - the approved version it will replace, "no approved yet", or a red warning
+    when the pending version is the same as or older than approved (likely
+    leftover or already published);
+  - the history notes for the pending version.
+
+  Pending history has no approval date, so the wait is counted from when My Day
+  first saw that pending version. On the first scan this is the newest file time
+  in the folder, so it can be off after a fresh `git clone`/`pull`. A new
+  pending version resets the timer.
+- **Recent ISIs:** the last 10 viewers you opened, newest first. Click one to
+  reopen it.
+- **What changed since yesterday:** click **Connect repo folder…** and select
+  your local `Banners_TheBrief_ISIs` folder. The extension only reads it. All
+  ~90 ISIs are indexed in under a second. The card lists ISIs where:
+  - files in the `approved`/`pending` folder were modified since the start of
+    yesterday;
+  - the version (`isiText.js`) differs from the last scan taken before today;
+  - the ISI is new since that scan;
+  - the latest `history.htm` approval date is yesterday or today.
+
+  When an ISI was bumped or approved, its latest history notes are shown too.
+  Use **Rescan** to refresh.
+- **Daily summary:** a plain-text recap for any day. It lists the ISIs you
+  viewed or downloaded, with times, versions, options and ZIP types. You can
+  optionally add the repo files changed that day. Click **Copy summary** to
+  paste it into Teams, email or a timesheet.
+
+**Viewer base URL** (at the bottom) is where links open, for example
+`http://localhost:8767/` or `file:///Users/you/Banners_TheBrief_ISIs/`. It is
+detected automatically from viewers you've opened; change it and click
+**Save** if needed.
+
+Limitations:
+- Activity is stored only in this browser (`chrome.storage.local`, last 45
+  days). Nothing is sent anywhere.
+- "Changed" uses file modification times, so a `git pull` or checkout also
+  counts as a change.
+- Version bumps are tracked from the day after the first scan.
+- Chrome may ask you to re-allow folder access once per browser session.
+- Opening `file://` links requires *Allow access to file URLs* (install step 4).
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `manifest.json` | Extension manifest (MV3). Injects only on `*toptobottomviewer*` URLs. |
-| `content.js` | Builds the panel (top frame) and captures each tray (preview frames). |
-| `background.js` | Service worker; saves the PNGs via the `downloads` API. |
+| `content.js` | Builds the panel (top frame), captures each tray (preview frames), and logs viewer activity for My Day. |
+| `background.js` | Service worker. Saves downloads, stores My Day activity, and opens My Day from the toolbar icon. |
+| `myday.html` / `myday.css` / `myday.js` | The My Day dashboard (switcher, favourites, pending queue, recent ISIs, changes, daily summary). |
 | `vendor/html2canvas.min.js` | Bundled renderer (v1.4.1). |
 
 ## Notes / troubleshooting
